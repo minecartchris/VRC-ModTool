@@ -1,0 +1,11 @@
+# Extra trigger words/phrases, one per line. Lines starting with # are ignored.
+# Matching is whole-word, lowercase, against the speech-to-text transcript —
+# only standard spellings matter here, since that's all the transcriber outputs.
+# Purpose: auto-clip evidence when other users say this stuff in voice chat.
+#
+# Copy this file to `triggers.txt` and add the words/phrases you want to catch.
+# Your real triggers.txt is gitignored so your list stays local.
+
+# examples (replace with your own):
+# example-phrase-one
+# example-phrase-two

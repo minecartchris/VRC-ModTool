@@ -1,0 +1,12 @@
+# Python 3.10+ on Windows.
+#
+# Offline speech-to-text also needs a Vosk model in this folder, e.g.
+# vosk-model-small-en-us-0.15 (small/fast) or vosk-model-en-us-0.22 (large/accurate),
+# downloaded from https://alphacephei.com/vosk/models and unzipped here.
+
+numpy
+scipy
+requests
+vosk
+PyAudioWPatch
+Pillow

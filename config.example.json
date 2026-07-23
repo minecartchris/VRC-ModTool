@@ -1,0 +1,11 @@
+{
+  "device": "VRChat + Discord (System + Discord)",
+  "model": "",
+  "hotkey": "f8",
+  "cooldown": 15.0,
+  "xsoverlay": true,
+  "chatbox": false,
+  "medal_dir": "C:\\Users\\YOU\\Videos\\Medal\\Clips",
+  "note_filter": "age ok",
+  "group_filter": ""
+}

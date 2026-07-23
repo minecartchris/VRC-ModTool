@@ -1,0 +1,31 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- Secrets / credentials (NEVER commit) ----
+vrc_cookies.txt
+
+# ---- Local user config (copy the .example files and edit) ----
+config.json
+triggers.txt
+.claude/settings.local.json
+
+# ---- Private runtime data (other people's info — keep local) ----
+incidents.jsonl
+incidents.tmp
+incident_shots/
+screening_db.json
+
+# ---- Logs ----
+*.log
+
+# ---- Offline speech models (large; download separately) ----
+vosk-model-*/
+
+# ---- OS cruft ----
+Thumbs.db
+.DS_Store
