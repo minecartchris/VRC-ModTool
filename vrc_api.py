@@ -15,7 +15,7 @@ from pathlib import Path
 
 import requests
 
-from autoclip import HERE
+from paths import HERE
 
 API = "https://api.vrchat.cloud/api/1"
 APP_NAME = "VRC-ModTool"
@@ -41,18 +41,30 @@ class VRChatAPIError(RuntimeError):
 
 
 class VRChatAPI:
-    def __init__(self, cookie_path: Path = COOKIE_PATH, contact: str = ""):
+    """`cookie_path=None` keeps the auth cookie in memory only.
+
+    The desktop app passes a path so you stay logged in between runs. The web
+    server passes None: it holds one of these per signed-in moderator for the
+    life of the process, so nobody else's VRChat session is ever written to
+    disk on a shared machine.
+    """
+
+    def __init__(self, cookie_path: Path | None = COOKIE_PATH,
+                 contact: str = ""):
         self.s = requests.Session()
         self.s.headers["User-Agent"] = build_user_agent(contact)
-        jar = LWPCookieJar(str(cookie_path))
-        try:
-            jar.load(ignore_discard=True)
-        except OSError:
-            pass
-        self.s.cookies = jar
+        if cookie_path is not None:
+            jar = LWPCookieJar(str(cookie_path))
+            try:
+                jar.load(ignore_discard=True)
+            except OSError:
+                pass
+            self.s.cookies = jar
         self.user: dict | None = None
 
     def _save_cookies(self) -> None:
+        if not isinstance(self.s.cookies, LWPCookieJar):
+            return          # in-memory jar: nothing to persist
         try:
             self.s.cookies.save(ignore_discard=True)
         except OSError:

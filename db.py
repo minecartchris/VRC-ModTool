@@ -1,8 +1,19 @@
-"""Single SQLite store for the mod suite: incidents + the screening cache.
+"""Single SQLite store for the mod suite: incidents, age checks, screening.
 
 Everything lives in one file, modtool.db, next to this module. Connections are
-opened with check_same_thread=False and guarded by a lock, because both the Tk
-GUI thread and the screening background worker read and write.
+opened with check_same_thread=False and guarded by a lock, because the Tk GUI
+thread, the screening background worker, and (on the web branch) the server's
+request handlers all read and write.
+
+The same file backs both the desktop app and the web server, so writes carry
+two extra fields the sync layer depends on:
+
+    updated_at  bumped only when a record's content actually changes
+    deleted     soft-delete flag, so a delete on one side propagates
+
+Bumping `updated_at` only on a real change is what stops push/pull ping-pong:
+a record pulled from the server and written back locally is byte-identical, so
+it never re-enters the outbound queue. See sync.py.
 
 On first run it imports any pre-existing incidents.jsonl / screening_db.json
 (the old JSON stores) so no history is lost, then leaves those files untouched.
@@ -11,11 +22,12 @@ On first run it imports any pre-existing incidents.jsonl / screening_db.json
 import json
 import sqlite3
 import threading
+import time
+import uuid
 from pathlib import Path
 
-from autoclip import HERE
+from paths import DB_PATH, HERE
 
-DB_PATH = HERE / "modtool.db"
 OLD_INCIDENTS = HERE / "incidents.jsonl"
 OLD_SCREENING = HERE / "screening_db.json"
 
@@ -41,19 +53,105 @@ CREATE TABLE IF NOT EXISTS screening_users (
     groups     TEXT,        -- JSON array
     checked_at REAL
 );
+
+-- Age checks: one row per verdict a moderator recorded on a player. The
+-- desktop Screening tab and the web UI both write here; `incident_id` links
+-- the row to the incident an over/under verdict files alongside it.
+CREATE TABLE IF NOT EXISTS age_checks (
+    id            TEXT PRIMARY KEY,
+    user_id       TEXT,
+    name          TEXT,
+    verdict       TEXT,     -- over | under | in_range
+    reported_age  INTEGER,
+    world_name    TEXT,
+    world_id      TEXT,
+    instance_id   TEXT,
+    incident_id   TEXT,
+    checked_by    TEXT,     -- moderator display name
+    checked_by_id TEXT,     -- moderator usr_ id
+    note          TEXT,
+    source        TEXT,     -- desktop | web | auto
+    created_at    REAL,
+    updated_at    REAL,
+    deleted       INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_age_checks_user ON age_checks(user_id);
+CREATE INDEX IF NOT EXISTS ix_age_checks_updated ON age_checks(updated_at);
+
+-- Web sessions. A session is created only after a VRChat login proves the
+-- account is in the configured staff group; the VRChat auth cookie itself is
+-- never stored here (it stays in the server's memory for that session).
+CREATE TABLE IF NOT EXISTS web_sessions (
+    token      TEXT PRIMARY KEY,
+    user_id    TEXT,
+    name       TEXT,
+    groups     TEXT,        -- JSON array of matched staff groups
+    created_at REAL,
+    expires_at REAL
+);
+
+-- Last instance snapshot each desktop client pushed, so the web Screening
+-- page can show who is in the world right now.
+CREATE TABLE IF NOT EXISTS rosters (
+    client_id   TEXT PRIMARY KEY,
+    client_name TEXT,
+    world_name  TEXT,
+    world_id    TEXT,
+    instance_id TEXT,
+    players     TEXT,       -- JSON array
+    updated_at  REAL
+);
+
+-- Sync cursors, one row per peer ("server" on a desktop client).
+CREATE TABLE IF NOT EXISTS sync_state (
+    peer         TEXT PRIMARY KEY,
+    last_push_at REAL DEFAULT 0,
+    last_pull_at REAL DEFAULT 0
+);
 """
+
+# Columns added after the first release; applied to existing databases in
+# _migrate_columns so an old modtool.db keeps working untouched.
+_ADDED_COLUMNS = {
+    "incidents": {
+        "updated_at": "REAL",
+        "deleted": "INTEGER DEFAULT 0",
+        "reported_by": "TEXT",
+        "origin": "TEXT",
+    },
+}
+
+_INCIDENT_FIELDS = (
+    "created_at", "trigger", "transcript", "world_name", "world_id",
+    "instance_id", "players", "clip_path", "screenshot_path", "notes",
+    "status", "reported_by", "origin", "deleted",
+)
+_AGE_CHECK_FIELDS = (
+    "user_id", "name", "verdict", "reported_age", "world_name", "world_id",
+    "instance_id", "incident_id", "checked_by", "checked_by_id", "note",
+    "source", "created_at", "deleted",
+)
+
+
+def new_id() -> str:
+    return uuid.uuid4().hex[:12]
 
 
 class Database:
     def __init__(self, path: Path = DB_PATH):
         self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         with self._lock:
             self.conn.execute("PRAGMA journal_mode=WAL")
+            # Two processes (GUI + server) share this file; wait rather than
+            # raising "database is locked" the moment they overlap.
+            self.conn.execute("PRAGMA busy_timeout=5000")
             self.conn.executescript(_SCHEMA)
             self.conn.commit()
+        self._migrate_columns()
         self._migrate_json()
 
     def close(self) -> None:
@@ -65,40 +163,87 @@ class Database:
             self.conn.execute(sql, params)
             self.conn.commit()
 
+    def _query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self.conn.execute(sql, params).fetchall()
+
+    def _one(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self.conn.execute(sql, params).fetchone()
+
     def _count(self, table: str) -> int:
         with self._lock:
             return self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
     # ---------------- incidents ----------------
-    def all_incidents(self) -> list[dict]:
-        with self._lock:
-            rows = self.conn.execute(
-                "SELECT * FROM incidents ORDER BY created_at").fetchall()
+    def all_incidents(self, include_deleted: bool = False) -> list[dict]:
+        sql = "SELECT * FROM incidents"
+        if not include_deleted:
+            sql += " WHERE COALESCE(deleted, 0) = 0"
+        sql += " ORDER BY created_at"
+        return [self._row_to_incident(r) for r in self._query(sql)]
+
+    def get_incident(self, inc_id: str) -> dict | None:
+        r = self._one("SELECT * FROM incidents WHERE id=?", (inc_id,))
+        return self._row_to_incident(r) if r else None
+
+    def upsert_incident(self, inc: dict) -> bool:
+        """Write an incident. Returns True if anything actually changed.
+
+        `updated_at` is stamped only on a real change, which keeps a record
+        that round-trips through sync from looking perpetually dirty.
+        """
+        row = self._incident_row(inc)
+        existing = self._one("SELECT * FROM incidents WHERE id=?", (inc["id"],))
+        if existing and not inc.get("created_at"):
+            row["created_at"] = existing["created_at"]   # keep, don't re-stamp
+        if existing and not self._differs(existing, row, _INCIDENT_FIELDS):
+            return False
+        row["id"] = inc["id"]
+        row["updated_at"] = time.time()
+        cols = ", ".join(row)
+        placeholders = ", ".join("?" for _ in row)
+        updates = ", ".join(f"{c}=excluded.{c}" for c in row if c != "id")
+        self._exec(
+            f"INSERT INTO incidents ({cols}) VALUES ({placeholders}) "
+            f"ON CONFLICT(id) DO UPDATE SET {updates}",
+            tuple(row.values()))
+        return True
+
+    def delete_incident(self, inc_id: str, hard: bool = False) -> None:
+        """Soft-delete by default so the removal reaches the other side."""
+        if hard:
+            self._exec("DELETE FROM incidents WHERE id=?", (inc_id,))
+        else:
+            self._exec(
+                "UPDATE incidents SET deleted=1, updated_at=? WHERE id=?",
+                (time.time(), inc_id))
+
+    def incidents_since(self, ts: float) -> list[dict]:
+        rows = self._query(
+            "SELECT * FROM incidents WHERE COALESCE(updated_at, 0) > ? "
+            "ORDER BY updated_at", (ts,))
         return [self._row_to_incident(r) for r in rows]
 
-    def upsert_incident(self, inc: dict) -> None:
-        self._exec(
-            """INSERT INTO incidents
-               (id, created_at, trigger, transcript, world_name, world_id,
-                instance_id, players, clip_path, screenshot_path, notes, status)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET
-                 created_at=excluded.created_at, trigger=excluded.trigger,
-                 transcript=excluded.transcript, world_name=excluded.world_name,
-                 world_id=excluded.world_id, instance_id=excluded.instance_id,
-                 players=excluded.players, clip_path=excluded.clip_path,
-                 screenshot_path=excluded.screenshot_path, notes=excluded.notes,
-                 status=excluded.status""",
-            (inc["id"], inc.get("created_at"), inc.get("trigger", ""),
-             json.dumps(inc.get("transcript", []), ensure_ascii=False),
-             inc.get("world_name", ""), inc.get("world_id", ""),
-             inc.get("instance_id", ""),
-             json.dumps(inc.get("players", []), ensure_ascii=False),
-             inc.get("clip_path", ""), inc.get("screenshot_path", ""),
-             inc.get("notes", ""), inc.get("status", "new")))
-
-    def delete_incident(self, inc_id: str) -> None:
-        self._exec("DELETE FROM incidents WHERE id=?", (inc_id,))
+    @staticmethod
+    def _incident_row(inc: dict) -> dict:
+        return {
+            "created_at": inc.get("created_at") or time.time(),
+            "trigger": inc.get("trigger", "") or "",
+            "transcript": json.dumps(inc.get("transcript", []),
+                                     ensure_ascii=False),
+            "world_name": inc.get("world_name", "") or "",
+            "world_id": inc.get("world_id", "") or "",
+            "instance_id": inc.get("instance_id", "") or "",
+            "players": json.dumps(inc.get("players", []), ensure_ascii=False),
+            "clip_path": inc.get("clip_path", "") or "",
+            "screenshot_path": inc.get("screenshot_path", "") or "",
+            "notes": inc.get("notes", "") or "",
+            "status": inc.get("status", "new") or "new",
+            "reported_by": inc.get("reported_by", "") or "",
+            "origin": inc.get("origin", "") or "",
+            "deleted": int(inc.get("deleted", 0) or 0),
+        }
 
     @staticmethod
     def _row_to_incident(r: sqlite3.Row) -> dict:
@@ -111,12 +256,100 @@ class Database:
             "players": json.loads(r["players"] or "[]"),
             "clip_path": r["clip_path"] or "",
             "screenshot_path": r["screenshot_path"] or "",
-            "notes": r["notes"] or "", "status": r["status"] or "new"}
+            "notes": r["notes"] or "", "status": r["status"] or "new",
+            "reported_by": r["reported_by"] or "",
+            "origin": r["origin"] or "",
+            "updated_at": r["updated_at"] or 0.0,
+            "deleted": bool(r["deleted"]),
+        }
+
+    # ---------------- age checks ----------------
+    def all_age_checks(self, include_deleted: bool = False) -> list[dict]:
+        sql = "SELECT * FROM age_checks"
+        if not include_deleted:
+            sql += " WHERE COALESCE(deleted, 0) = 0"
+        sql += " ORDER BY created_at DESC"
+        return [self._row_to_age_check(r) for r in self._query(sql)]
+
+    def get_age_check(self, check_id: str) -> dict | None:
+        r = self._one("SELECT * FROM age_checks WHERE id=?", (check_id,))
+        return self._row_to_age_check(r) if r else None
+
+    def age_checks_for_user(self, user_id: str) -> list[dict]:
+        rows = self._query(
+            "SELECT * FROM age_checks WHERE user_id=? AND COALESCE(deleted,0)=0"
+            " ORDER BY created_at DESC", (user_id,))
+        return [self._row_to_age_check(r) for r in rows]
+
+    def upsert_age_check(self, check: dict) -> bool:
+        row = self._age_check_row(check)
+        existing = self._one("SELECT * FROM age_checks WHERE id=?",
+                             (check["id"],))
+        if existing and not check.get("created_at"):
+            row["created_at"] = existing["created_at"]   # keep, don't re-stamp
+        if existing and not self._differs(existing, row, _AGE_CHECK_FIELDS):
+            return False
+        row["id"] = check["id"]
+        row["updated_at"] = time.time()
+        cols = ", ".join(row)
+        placeholders = ", ".join("?" for _ in row)
+        updates = ", ".join(f"{c}=excluded.{c}" for c in row if c != "id")
+        self._exec(
+            f"INSERT INTO age_checks ({cols}) VALUES ({placeholders}) "
+            f"ON CONFLICT(id) DO UPDATE SET {updates}",
+            tuple(row.values()))
+        return True
+
+    def delete_age_check(self, check_id: str) -> None:
+        self._exec("UPDATE age_checks SET deleted=1, updated_at=? WHERE id=?",
+                   (time.time(), check_id))
+
+    def age_checks_since(self, ts: float) -> list[dict]:
+        rows = self._query(
+            "SELECT * FROM age_checks WHERE COALESCE(updated_at, 0) > ? "
+            "ORDER BY updated_at", (ts,))
+        return [self._row_to_age_check(r) for r in rows]
+
+    @staticmethod
+    def _age_check_row(c: dict) -> dict:
+        age = c.get("reported_age")
+        return {
+            "user_id": c.get("user_id", "") or "",
+            "name": c.get("name", "") or "",
+            "verdict": c.get("verdict", "") or "",
+            "reported_age": int(age) if age not in (None, "") else None,
+            "world_name": c.get("world_name", "") or "",
+            "world_id": c.get("world_id", "") or "",
+            "instance_id": c.get("instance_id", "") or "",
+            "incident_id": c.get("incident_id", "") or "",
+            "checked_by": c.get("checked_by", "") or "",
+            "checked_by_id": c.get("checked_by_id", "") or "",
+            "note": c.get("note", "") or "",
+            "source": c.get("source", "") or "",
+            "created_at": c.get("created_at") or time.time(),
+            "deleted": int(c.get("deleted", 0) or 0),
+        }
+
+    @staticmethod
+    def _row_to_age_check(r: sqlite3.Row) -> dict:
+        return {
+            "id": r["id"], "user_id": r["user_id"] or "",
+            "name": r["name"] or "", "verdict": r["verdict"] or "",
+            "reported_age": r["reported_age"],
+            "world_name": r["world_name"] or "",
+            "world_id": r["world_id"] or "",
+            "instance_id": r["instance_id"] or "",
+            "incident_id": r["incident_id"] or "",
+            "checked_by": r["checked_by"] or "",
+            "checked_by_id": r["checked_by_id"] or "",
+            "note": r["note"] or "", "source": r["source"] or "",
+            "created_at": r["created_at"], "updated_at": r["updated_at"] or 0.0,
+            "deleted": bool(r["deleted"]),
+        }
 
     # ---------------- screening cache ----------------
     def all_users(self) -> dict:
-        with self._lock:
-            rows = self.conn.execute("SELECT * FROM screening_users").fetchall()
+        rows = self._query("SELECT * FROM screening_users")
         return {r["user_id"]: {
             "name": r["name"] or "", "note": r["note"] or "",
             "groups": json.loads(r["groups"] or "[]"),
@@ -133,7 +366,109 @@ class Database:
              json.dumps(rec.get("groups", []), ensure_ascii=False),
              rec.get("checked_at")))
 
-    # ---------------- one-time migration ----------------
+    # ---------------- rosters ----------------
+    def upsert_roster(self, client_id: str, snap: dict,
+                      client_name: str = "") -> None:
+        self._exec(
+            """INSERT INTO rosters
+               (client_id, client_name, world_name, world_id, instance_id,
+                players, updated_at)
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(client_id) DO UPDATE SET
+                 client_name=excluded.client_name,
+                 world_name=excluded.world_name, world_id=excluded.world_id,
+                 instance_id=excluded.instance_id, players=excluded.players,
+                 updated_at=excluded.updated_at""",
+            (client_id, client_name, snap.get("world_name", ""),
+             snap.get("world_id", ""), snap.get("instance_id", ""),
+             json.dumps(snap.get("players", []), ensure_ascii=False),
+             time.time()))
+
+    def all_rosters(self) -> list[dict]:
+        rows = self._query("SELECT * FROM rosters ORDER BY updated_at DESC")
+        return [{
+            "client_id": r["client_id"], "client_name": r["client_name"] or "",
+            "world_name": r["world_name"] or "", "world_id": r["world_id"] or "",
+            "instance_id": r["instance_id"] or "",
+            "players": json.loads(r["players"] or "[]"),
+            "updated_at": r["updated_at"] or 0.0} for r in rows]
+
+    # ---------------- web sessions ----------------
+    def create_session(self, token: str, user_id: str, name: str,
+                       groups: list, ttl: float) -> None:
+        now = time.time()
+        self._exec(
+            "INSERT OR REPLACE INTO web_sessions "
+            "(token, user_id, name, groups, created_at, expires_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (token, user_id, name,
+             json.dumps(groups, ensure_ascii=False), now, now + ttl))
+
+    def get_session(self, token: str) -> dict | None:
+        r = self._one("SELECT * FROM web_sessions WHERE token=?", (token,))
+        if not r:
+            return None
+        if (r["expires_at"] or 0) < time.time():
+            self.delete_session(token)
+            return None
+        return {"token": r["token"], "user_id": r["user_id"] or "",
+                "name": r["name"] or "",
+                "groups": json.loads(r["groups"] or "[]"),
+                "created_at": r["created_at"], "expires_at": r["expires_at"]}
+
+    def delete_session(self, token: str) -> None:
+        self._exec("DELETE FROM web_sessions WHERE token=?", (token,))
+
+    def purge_expired_sessions(self) -> None:
+        self._exec("DELETE FROM web_sessions WHERE expires_at < ?",
+                   (time.time(),))
+
+    # ---------------- sync cursors ----------------
+    def sync_cursor(self, peer: str) -> dict:
+        r = self._one("SELECT * FROM sync_state WHERE peer=?", (peer,))
+        if not r:
+            return {"last_push_at": 0.0, "last_pull_at": 0.0}
+        return {"last_push_at": r["last_push_at"] or 0.0,
+                "last_pull_at": r["last_pull_at"] or 0.0}
+
+    def set_sync_cursor(self, peer: str, *, last_push_at: float | None = None,
+                        last_pull_at: float | None = None) -> None:
+        cur = self.sync_cursor(peer)
+        self._exec(
+            "INSERT INTO sync_state (peer, last_push_at, last_pull_at) "
+            "VALUES (?,?,?) ON CONFLICT(peer) DO UPDATE SET "
+            "last_push_at=excluded.last_push_at, "
+            "last_pull_at=excluded.last_pull_at",
+            (peer,
+             cur["last_push_at"] if last_push_at is None else last_push_at,
+             cur["last_pull_at"] if last_pull_at is None else last_pull_at))
+
+    # ---------------- helpers ----------------
+    @staticmethod
+    def _differs(existing: sqlite3.Row, row: dict, fields: tuple) -> bool:
+        """True if any tracked field changed. Timestamps compare loosely so a
+        float round-trip through JSON doesn't register as an edit."""
+        for f in fields:
+            new, old = row[f], existing[f]
+            if isinstance(new, float) or isinstance(old, float):
+                if abs((new or 0) - (old or 0)) > 1e-6:
+                    return True
+            elif (new or "") != (old or ""):
+                return True
+        return False
+
+    # ---------------- migrations ----------------
+    def _migrate_columns(self) -> None:
+        for table, cols in _ADDED_COLUMNS.items():
+            have = {r["name"] for r in self._query(f"PRAGMA table_info({table})")}
+            for col, decl in cols.items():
+                if col not in have:
+                    self._exec(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        # Pre-existing incidents have no updated_at; seed it from created_at so
+        # a first sync sends real history instead of skipping it.
+        self._exec("UPDATE incidents SET updated_at = COALESCE(created_at, 0) "
+                   "WHERE updated_at IS NULL")
+
     def _migrate_json(self) -> None:
         if self._count("incidents") == 0 and OLD_INCIDENTS.exists():
             for line in OLD_INCIDENTS.read_text(encoding="utf-8").splitlines():

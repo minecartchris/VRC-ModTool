@@ -68,7 +68,7 @@ MODELS = {
     "large": "vosk-model-en-us-0.22",         # 1.8 GB, much better in noise
 }
 MODEL_BASE_URL = "https://alphacephei.com/vosk/models/"
-HERE = Path(__file__).resolve().parent
+from paths import HERE  # noqa: E402  (single source of truth for the tree root)
 
 # Windows virtual-key codes for hotkey presses (no `keyboard` library — its
 # global hook thread can deadlock imports under pythonw).

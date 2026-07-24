@@ -8,5 +8,9 @@
   "medal_dir": "C:\\Users\\YOU\\Videos\\Medal\\Clips",
   "note_filter": "age ok",
   "group_filter": "",
-  "vrc_contact": ""
+  "vrc_contact": "",
+  "sync_enabled": false,
+  "sync_url": "http://127.0.0.1:8787",
+  "sync_token": "",
+  "sync_interval": 60.0
 }

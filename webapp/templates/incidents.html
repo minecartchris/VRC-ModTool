@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Incidents — Mod Suite{% endblock %}
+{% block content %}
+<h1>Incidents <span class="count">{{ incidents|length }}</span></h1>
+
+<form class="filters" method="get" action="/incidents">
+  <input name="q" value="{{ q }}" placeholder="Search trigger, world, player, transcript…">
+  <select name="status">
+    <option value="">any status</option>
+    {% for s in ["new", "reported", "dismissed"] %}
+    <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+  {% if q or status %}<a class="link" href="/incidents">clear</a>{% endif %}
+</form>
+
+{% if incidents %}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>When</th><th>Trigger</th><th>World</th><th>Players</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+  {% for i in incidents %}
+    <tr onclick="location='/incidents/{{ i.id }}'">
+      <td class="nowrap">{{ fmt_time(i.created_at) }}</td>
+      <td><a href="/incidents/{{ i.id }}">{{ i.trigger or "(no trigger)" }}</a>
+          {% if i.origin %}<span class="dim">· {{ i.origin }}</span>{% endif %}</td>
+      <td>{{ i.world_name or "—" }}</td>
+      <td class="num">{{ i.players|length }}</td>
+      <td><span class="badge {{ i.status }}">{{ i.status }}</span></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="dim">No incidents match.</p>
+{% endif %}
+{% endblock %}

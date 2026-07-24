@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Age checks — Mod Suite{% endblock %}
+{% block content %}
+<h1>Age checks <span class="count">{{ checks|length }}</span></h1>
+
+<section class="card new-check">
+  <h2>Record a check</h2>
+  <form method="post" action="/age-checks" class="inline-form">
+    <label>Player
+      {% if roster %}
+        <input name="name" list="roster-names" required placeholder="display name">
+        <datalist id="roster-names">
+          {% for p in roster %}<option value="{{ p.name }}">{{ p.user_id }}</option>{% endfor %}
+        </datalist>
+      {% else %}
+        <input name="name" required placeholder="display name">
+      {% endif %}
+    </label>
+    <label>User ID <input name="user_id" placeholder="usr_…"></label>
+    <label>Verdict
+      <select name="verdict" required>
+        {% for v in verdicts %}<option value="{{ v }}">{{ verdict_label[v] }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Age <input name="reported_age" inputmode="numeric" size="4" placeholder="—"></label>
+    <label class="grow">Note <input name="note" placeholder="how you established this"></label>
+    {% if current %}
+    <input type="hidden" name="world_name" value="{{ current.world_name }}">
+    <input type="hidden" name="world_id" value="{{ current.world_id }}">
+    <input type="hidden" name="instance_id" value="{{ current.instance_id }}">
+    {% endif %}
+    <button type="submit">Record</button>
+  </form>
+  <p class="dim">Over and under also file an incident with the world, instance
+    and roster attached{% if current %}, currently
+    <strong>{{ current.world_name or "unknown world" }}</strong>{% endif %}.</p>
+</section>
+
+<form class="filters" method="get" action="/age-checks">
+  <input name="q" value="{{ q }}" placeholder="Search name or user ID…">
+  <select name="verdict">
+    <option value="">any verdict</option>
+    {% for v in verdicts %}
+    <option value="{{ v }}" {% if verdict == v %}selected{% endif %}>{{ verdict_label[v] }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+  {% if q or verdict %}<a class="link" href="/age-checks">clear</a>{% endif %}
+</form>
+
+{% if checks %}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>When</th><th>Player</th><th>Verdict</th><th>Age</th><th>By</th>
+        <th>Note</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for c in checks %}
+    <tr>
+      <td class="nowrap">{{ fmt_time(c.created_at) }}</td>
+      <td><strong>{{ c.name }}</strong>
+          {% if c.user_id %}<br><code class="dim">{{ c.user_id }}</code>{% endif %}</td>
+      <td><span class="badge v-{{ c.verdict }}">{{ verdict_label[c.verdict] }}</span>
+          {% if c.incident_id %}<br><a class="dim" href="/incidents/{{ c.incident_id }}">incident →</a>{% endif %}</td>
+      <td class="num">{{ c.reported_age or "—" }}</td>
+      <td>{{ c.checked_by or "—" }}<br><span class="dim">{{ c.source }}</span></td>
+      <td class="note">{{ c.note or "" }}</td>
+      <td>
+        <form method="post" action="/age-checks/{{ c.id }}/delete"
+              onsubmit="return confirm('Delete this age check?')">
+          <button class="link danger-link">delete</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="dim">No age checks match.</p>
+{% endif %}
+{% endblock %}

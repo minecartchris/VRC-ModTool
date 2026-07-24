@@ -10,7 +10,6 @@ import uuid
 from pathlib import Path
 
 import db
-from autoclip import HERE
 
 DEFAULT_MEDAL_DIR = Path.home() / "Videos" / "Medal" / "Clips"
 
@@ -39,7 +38,8 @@ class IncidentStore:
         self.incidents: list[dict] = self.db.all_incidents()
 
     def add(self, *, trigger: str, transcript: list[str], world_name: str,
-            world_id: str, instance_id: str, players: list[dict]) -> dict:
+            world_id: str, instance_id: str, players: list[dict],
+            origin: str = "listener", reported_by: str = "") -> dict:
         inc = {
             "id": uuid.uuid4().hex[:12],
             "created_at": time.time(),
@@ -53,10 +53,21 @@ class IncidentStore:
             "screenshot_path": "",
             "notes": "",
             "status": "new",           # new | reported | dismissed
+            "origin": origin,          # listener | desktop | web | auto
+            "reported_by": reported_by,
         }
         self.incidents.append(inc)
         self.db.upsert_incident(inc)
         return inc
+
+    def reload(self) -> None:
+        """Re-read from the database.
+
+        The in-memory list is not the only writer any more: age checks and the
+        sync client write incidents straight to the DB, so the GUI refreshes
+        from it before redrawing rather than trusting its own cache.
+        """
+        self.incidents = self.db.all_incidents()
 
     def get(self, inc_id: str) -> dict | None:
         return next((i for i in self.incidents if i["id"] == inc_id), None)

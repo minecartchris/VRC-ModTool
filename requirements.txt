@@ -10,3 +10,11 @@ requests
 vosk
 PyAudioWPatch
 Pillow
+
+# ---- web server (run_web.py) ----
+# Only needed to run the web front end; the desktop app works without them.
+# On a Linux/VPS deployment install just these — see requirements-web.txt.
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart

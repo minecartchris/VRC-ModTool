@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Sign in — Mod Suite{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <h1>🛡️ Mod Suite</h1>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  {% if ticket %}
+    <p class="lead">
+      Enter the {{ 'code from your authenticator app' if method == 'totp'
+                    else 'code VRChat emailed you' }}.
+    </p>
+    <form method="post" action="/login/2fa" class="card">
+      <input type="hidden" name="ticket" value="{{ ticket }}">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label>Two-factor code
+        <input name="code" inputmode="numeric" autocomplete="one-time-code"
+               autofocus required>
+      </label>
+      <button type="submit">Verify</button>
+    </form>
+  {% else %}
+    <p class="lead">
+      Sign in with your own VRChat account. Access is granted to members of the
+      staff group — nothing else is checked, and your password is forwarded to
+      VRChat and never stored.
+    </p>
+    <form method="post" action="/login" class="card">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label>VRChat username or email
+        <input name="username" autocomplete="username" autofocus required>
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password"
+               required>
+      </label>
+      <button type="submit">Sign in</button>
+    </form>
+    {% if not cfg.staff_group %}
+      <p class="warn">
+        No staff group is configured yet, so sign-in will fail. Set
+        <code>staff_group</code> in <code>web_config.json</code>.
+      </p>
+    {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

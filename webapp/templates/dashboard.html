@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Overview — Mod Suite{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+
+<div class="stats">
+  <a class="stat" href="/incidents?status=new">
+    <span class="n">{{ stats.incidents_new }}</span>
+    <span class="l">open incidents</span>
+  </a>
+  <a class="stat" href="/incidents">
+    <span class="n">{{ stats.incidents }}</span>
+    <span class="l">incidents total</span>
+  </a>
+  <a class="stat" href="/age-checks?verdict=under">
+    <span class="n bad">{{ stats.checks_under }}</span>
+    <span class="l">under-range checks</span>
+  </a>
+  <a class="stat" href="/age-checks">
+    <span class="n">{{ stats.checks }}</span>
+    <span class="l">age checks total</span>
+  </a>
+</div>
+
+{% if rosters %}
+<h2>Instance</h2>
+<div class="cards">
+  {% for r in rosters %}
+  <div class="card roster">
+    <div class="roster-head">
+      <strong>{{ r.world_name or "(unknown world)" }}</strong>
+      <span class="dim">{{ r.client_name or r.client_id }} · {{ fmt_ago(r.updated_at) }}</span>
+    </div>
+    <p class="dim">{{ r.players|length }} in instance{% if r.instance_id %} · #{{ short_instance(r.instance_id) }}{% endif %}</p>
+    <a href="/screening">Screen this instance →</a>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="dim">No desktop client has reported an instance yet. Turn on sync in
+the desktop app's Settings tab to see the live roster here.</p>
+{% endif %}
+
+<div class="two-col">
+  <section>
+    <h2>Recent incidents</h2>
+    {% if recent_incidents %}
+    <ul class="list">
+      {% for i in recent_incidents %}
+      <li>
+        <a href="/incidents/{{ i.id }}">{{ i.trigger or "(no trigger)" }}</a>
+        <span class="badge {{ i.status }}">{{ i.status }}</span>
+        <span class="dim">{{ fmt_time(i.created_at) }} · {{ i.world_name or "unknown world" }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="dim">Nothing yet.</p>{% endif %}
+  </section>
+
+  <section>
+    <h2>Recent age checks</h2>
+    {% if recent_checks %}
+    <ul class="list">
+      {% for c in recent_checks %}
+      <li>
+        <strong>{{ c.name }}</strong>
+        <span class="badge v-{{ c.verdict }}">{{ verdict_label[c.verdict] }}</span>
+        <span class="dim">{{ fmt_time(c.created_at) }}{% if c.checked_by %} · by {{ c.checked_by }}{% endif %}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="dim">Nothing yet.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

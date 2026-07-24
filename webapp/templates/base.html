@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Mod Suite{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>">
+</head>
+<body>
+{% if session %}
+<header class="topbar">
+  <a class="brand" href="/">🛡️ Mod Suite</a>
+  <nav>
+    <a href="/incidents">Incidents</a>
+    <a href="/age-checks">Age checks</a>
+    <a href="/screening">Screening</a>
+  </nav>
+  <div class="who">
+    <span class="name" title="{{ session.user_id }}">{{ session.name }}</span>
+    <span class="badge staff" title="Staff groups: {{ session.groups|join(', ') }}">staff</span>
+    <form method="post" action="/logout"><button class="link">Sign out</button></form>
+  </div>
+</header>
+{% if not live_api %}
+<p class="notice">
+  This session has no live VRChat connection (the server restarted since you
+  signed in). Records still work; writing VRChat notes needs a fresh sign-in.
+</p>
+{% endif %}
+{% endif %}
+
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

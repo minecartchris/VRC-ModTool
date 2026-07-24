@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Screening — Mod Suite{% endblock %}
+{% block content %}
+<h1>Screening</h1>
+
+{% if current %}
+<p class="dim">
+  <strong>{{ current.world_name or "unknown world" }}</strong>
+  {% if current.instance_id %}· instance #{{ short_instance(current.instance_id) }}{% endif %}
+  · {{ rows|length }} present · reported by
+  {{ current.client_name or current.client_id }} {{ fmt_ago(current.updated_at) }}
+</p>
+{% else %}
+<p class="dim">No desktop client has reported an instance. The roster comes
+  from VRChat's local log, so a desktop client has to be running with sync on.</p>
+{% endif %}
+
+{% if rows %}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Player</th><th>Status</th><th>VRChat note</th><th>Groups</th>
+        <th>Record</th></tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><strong>{{ r.name }}</strong>
+          {% if r.user_id %}<br><code class="dim">{{ r.user_id }}</code>{% endif %}</td>
+      <td>
+        {% if r.check %}
+          <span class="badge v-{{ r.check.verdict }}">{{ verdict_label[r.check.verdict] }}</span>
+          <br><span class="dim">{{ fmt_ago(r.check.created_at) }}</span>
+        {% elif r.tagged %}
+          <span class="badge v-in_range">tagged in VRChat</span>
+        {% else %}
+          <span class="badge unknown">unchecked</span>
+        {% endif %}
+      </td>
+      <td class="note">{{ r.note or "—" }}</td>
+      <td class="note">{% for g in r.groups %}{{ g.name or g.id }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</td>
+      <td class="actions">
+        <form method="post" action="/age-checks" class="row-form">
+          <input type="hidden" name="name" value="{{ r.name }}">
+          <input type="hidden" name="user_id" value="{{ r.user_id }}">
+          {% if current %}
+          <input type="hidden" name="world_name" value="{{ current.world_name }}">
+          <input type="hidden" name="world_id" value="{{ current.world_id }}">
+          <input type="hidden" name="instance_id" value="{{ current.instance_id }}">
+          {% endif %}
+          <input name="reported_age" size="3" placeholder="age" inputmode="numeric">
+          <button name="verdict" value="over">Over</button>
+          <button name="verdict" value="under" class="danger-btn">Under</button>
+          <button name="verdict" value="in_range">In range</button>
+        </form>
+        {% if r.user_id and live_api %}
+        <form method="post" action="/screening/tag" class="row-form">
+          <input type="hidden" name="user_id" value="{{ r.user_id }}">
+          <input type="hidden" name="name" value="{{ r.name }}">
+          <button class="link">tag note “{{ cfg.note_filter }}”</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

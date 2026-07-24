@@ -12,6 +12,7 @@ vrc_cookies.txt
 # ---- Local user config (copy the .example files and edit) ----
 config.json
 triggers.txt
+web_config.json
 .claude/settings.local.json
 
 # ---- Private runtime data (other people's info — keep local) ----
