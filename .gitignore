@@ -15,6 +15,10 @@ triggers.txt
 .claude/settings.local.json
 
 # ---- Private runtime data (other people's info — keep local) ----
+# SQLite store (incidents + screening cache) and its WAL side-files
+*.db
+*.db-wal
+*.db-shm
 incidents.jsonl
 incidents.tmp
 incident_shots/

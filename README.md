@@ -39,12 +39,13 @@ Run `gui.bat` (or `pythonw gui.py`).
   VRChat API and cached locally in `screening_db.json`; the list refreshes as
   people join/leave. Live verified/unverified counts, per-player **Over /
   Under** (logs an age incident) and **In Range** (tags the note), plus a
-  configurable group filter whose members are auto-verified.
+  configurable group filter whose members are auto-verified. The per-user
+  cache lives in `modtool.db`.
 - **Incidents** — one row per trigger. Select one to see a paste-ready
   report (world/instance IDs, transcript, roster, linked clip, and a
   screenshot of the VRChat window at the trigger moment — with nameplates
   on, that's who was in view). Buttons: Copy report, Save notes, Open clip,
-  Open screenshot, Mark reported, Delete. Stored in `incidents.jsonl`;
+  Open screenshot, Mark reported, Delete. Stored in `modtool.db`;
   screenshots in `incident_shots\`.
 - **Settings** — in-VR notifications (XSOverlay/OVR Toolkit popup — private;
   VRChat chatbox — public, off by default), Medal clips folder, and an
@@ -58,12 +59,14 @@ Run `gui.bat` (or `pythonw gui.py`).
 | `autoclip.py` | audio capture → Vosk transcription → hotkey engine (also a CLI) |
 | `gui.py` | tabbed Tkinter app wiring everything together |
 | `vrc_log.py` | tails `AppData\LocalLow\VRChat\VRChat\output_log_*.txt` for world/player state |
-| `incidents.py` | incident records (`incidents.jsonl`) + Medal clip discovery |
+| `db.py` | one SQLite store (`modtool.db`) for incidents + the screening cache |
+| `incidents.py` | incident records (SQLite via `db.py`) + Medal clip discovery |
 | `report.py` | incident → paste-ready report text |
 | `capture.py` | PrintWindow screenshot of VRChat at trigger time (works while occluded; never falls back to a desktop grab) |
 | `notify.py` | XSOverlay popup + OSC chatbox (UDP, fire-and-forget) |
 | `vrc_api.py` | minimal VRChat web API client (login, 2FA, user search) |
 
-Settings persist in `config.json`. Everything runs locally; the only network
-calls are the optional VRChat API login/lookups and the one-time Vosk model
-download.
+Settings persist in `config.json`; incidents and the screening cache persist in
+`modtool.db` (a JSONL/JSON store from older versions is imported automatically
+on first run). Everything runs locally; the only network calls are the optional
+VRChat API login/lookups and the one-time Vosk model download.

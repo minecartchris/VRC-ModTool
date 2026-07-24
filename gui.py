@@ -25,6 +25,7 @@ from tkinter.scrolledtext import ScrolledText
 
 import autoclip
 import capture
+import db
 import incidents
 import notify
 import report
@@ -51,7 +52,6 @@ VRCHAT_DISCORD_PRESET = "VRChat + Discord (System + Discord)"
 VRCHAT_DISCORD_FILTERS = ["System (Elgato", "Discord (Elgato"]
 
 CONFIG_PATH = autoclip.HERE / "config.json"
-SCR_DB_PATH = autoclip.HERE / "screening_db.json"
 DEFAULT_CONFIG = {
     "device": VRCHAT_DISCORD_PRESET,
     "model": "",
@@ -99,7 +99,8 @@ class App:
         self.heard_count = 0
         self.trigger_count = 0
 
-        self.store = incidents.IncidentStore()
+        self.db = db.Database()
+        self.store = incidents.IncidentStore(self.db)
         self.heard_buffer: deque[str] = deque(maxlen=6)
         self.pending_incident: tuple[str, float, int] | None = None  # id, ts, lines left
 
@@ -110,7 +111,7 @@ class App:
         self.vrc_api = None            # created lazily on the settings tab
         self._2fa_method = ""
         self.scr_rows: dict[str, dict] = {}   # iid -> current on-screen row
-        self.scr_db = self._load_scr_db()     # user_id -> cached note/groups
+        self.scr_db = self.db.all_users()     # user_id -> cached note/groups
         self._notes_map: dict | None = None   # targetUserId->note (once/session)
         self._scr_fetch_q: queue.Queue = queue.Queue()
         self._scr_queued: set[str] = set()    # user_ids awaiting a lookup
@@ -423,20 +424,6 @@ class App:
         sel = self.scr_tree.selection()
         return self.scr_rows.get(sel[0]) if sel else None
 
-    # ---------------- screening DB (per-user note/group cache) ----------------
-    def _load_scr_db(self) -> dict:
-        try:
-            return json.loads(SCR_DB_PATH.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-
-    def _save_scr_db(self) -> None:
-        try:
-            SCR_DB_PATH.write_text(
-                json.dumps(self.scr_db, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
-
     def _note_has_filter(self, note: str) -> bool:
         word = self.cfg.get("note_filter", "").strip().lower()
         return bool(word and note and word in note.lower())
@@ -474,8 +461,8 @@ class App:
                 new = m.get(uid, "")
                 if new != self.scr_db[uid].get("note", ""):
                     self.scr_db[uid]["note"] = new
+                    self.db.upsert_user(uid, self.scr_db[uid])
                     self.q.put(("scr_update", uid))
-        self._save_scr_db()
         self.q.put(("scr_synced", None))
 
     def _scr_sync(self) -> None:
@@ -580,9 +567,10 @@ class App:
                     self._scr_fetch_q.put(("fetch", uid, name))
                     continue
                 # user hides groups or other error: cache with none
-            self.scr_db[uid] = {"name": name, "note": note, "groups": groups,
-                                "checked_at": time.time()}
-            self._save_scr_db()
+            rec = {"name": name, "note": note, "groups": groups,
+                   "checked_at": time.time()}
+            self.scr_db[uid] = rec
+            self.db.upsert_user(uid, rec)
             self._scr_queued.discard(uid)
             self.q.put(("scr_update", uid))
             # auto-OK: in the watched group and not already verified
@@ -1076,6 +1064,10 @@ class App:
         self.stop_event.set()
         self.watcher.stop()
         try:
+            self.db.close()
+        except Exception:
+            pass
+        try:
             self.logfile.close()
         except OSError:
             pass
@@ -1213,10 +1205,10 @@ class App:
                     ", ".join(row.get("groups", []))), tags=("tagged",))
             # persist to the DB so we remember the tag next session
             rec = self.scr_db.setdefault(
-                uid, {"name": payload["name"], "groups": [],
+                uid, {"name": payload["name"], "note": "", "groups": [],
                       "checked_at": time.time()})
             rec["note"] = payload["note"]
-            self._save_scr_db()
+            self.db.upsert_user(uid, rec)
             if self._notes_map is not None:
                 self._notes_map[uid] = payload["note"]
             self._scr_update_counts()

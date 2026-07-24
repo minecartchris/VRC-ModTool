@@ -1,18 +1,17 @@
 """Incident records: what fired, who was there, and which clip has the proof.
 
-Incidents are stored as one JSON object per line in incidents.jsonl next to
-this file — human-readable, greppable, and safe to back up or hand to another
-moderator.
+Incidents are stored in the shared SQLite database (see db.py). This module
+keeps the same IncidentStore API the GUI already uses; it just persists to the
+`incidents` table instead of a JSONL file.
 """
 
-import json
 import time
 import uuid
 from pathlib import Path
 
+import db
 from autoclip import HERE
 
-INCIDENTS_PATH = HERE / "incidents.jsonl"
 DEFAULT_MEDAL_DIR = Path.home() / "Videos" / "Medal" / "Clips"
 
 
@@ -35,17 +34,9 @@ def find_new_clip(clips_dir: str | Path, after_ts: float) -> str | None:
 
 
 class IncidentStore:
-    def __init__(self, path: Path = INCIDENTS_PATH):
-        self.path = path
-        self.incidents: list[dict] = []
-        if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line:
-                    try:
-                        self.incidents.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
+    def __init__(self, database: "db.Database | None" = None):
+        self.db = database or db.Database()
+        self.incidents: list[dict] = self.db.all_incidents()
 
     def add(self, *, trigger: str, transcript: list[str], world_name: str,
             world_id: str, instance_id: str, players: list[dict]) -> dict:
@@ -64,7 +55,7 @@ class IncidentStore:
             "status": "new",           # new | reported | dismissed
         }
         self.incidents.append(inc)
-        self._append(inc)
+        self.db.upsert_incident(inc)
         return inc
 
     def get(self, inc_id: str) -> dict | None:
@@ -74,21 +65,9 @@ class IncidentStore:
         inc = self.get(inc_id)
         if inc:
             inc.update(fields)
-            self._rewrite()
+            self.db.upsert_incident(inc)
         return inc
 
     def delete(self, inc_id: str) -> None:
         self.incidents = [i for i in self.incidents if i["id"] != inc_id]
-        self._rewrite()
-
-    # ---------------- persistence ----------------
-    def _append(self, inc: dict) -> None:
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(inc, ensure_ascii=False) + "\n")
-
-    def _rewrite(self) -> None:
-        tmp = self.path.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            for inc in self.incidents:
-                f.write(json.dumps(inc, ensure_ascii=False) + "\n")
-        tmp.replace(self.path)
+        self.db.delete_incident(inc_id)
