@@ -64,6 +64,9 @@ DEFAULT_CONFIG = {
     # optional group-name substring that flags members of a watched group.
     "note_filter": "age ok",
     "group_filter": "",
+    # VRChat requires REAL contact info in the API User-Agent (email/handle).
+    # Kept here in local config so it never ends up in the public repo.
+    "vrc_contact": "",
 }
 
 
@@ -838,9 +841,21 @@ class App:
         s3 = section("VRChat account (optional)")
         tk.Label(s3, text="Used to look up user IDs and profiles for reports. "
                           "Login goes directly to VRChat's API; only the "
-                          "session cookie is stored locally.",
+                          "session cookie is stored locally. VRChat requires "
+                          "real contact info (your email or Discord) in every "
+                          "API request — enter it below or login is refused.",
                  bg=BG, fg=DIM, font=FONT, wraplength=700,
                  justify="left").pack(anchor="w", **pad)
+        crow = tk.Frame(s3, bg=BG)
+        crow.pack(anchor="w", **pad)
+        tk.Label(crow, text="Contact", bg=BG, fg=DIM, font=FONT).pack(
+            side="left")
+        self.vrc_contact_var = tk.StringVar(value=self.cfg.get("vrc_contact", ""))
+        tk.Entry(crow, textvariable=self.vrc_contact_var, width=40, bg=PANEL,
+                 fg=FG, insertbackground=FG, relief="flat", font=FONT).pack(
+            side="left", padx=6, ipady=3)
+        tk.Label(crow, text="e.g. you@email.com", bg=BG, fg=DIM,
+                 font=FONT).pack(side="left")
         form = tk.Frame(s3, bg=BG)
         form.pack(anchor="w", **pad)
         tk.Label(form, text="Username", bg=BG, fg=DIM, font=FONT).grid(
@@ -926,7 +941,8 @@ class App:
             xsoverlay=self.xso_var.get(), chatbox=self.chatbox_var.get(),
             medal_dir=self.medal_var.get().strip(),
             note_filter=self.note_filter_var.get().strip(),
-            group_filter=self.group_filter_var.get().strip())
+            group_filter=self.group_filter_var.get().strip(),
+            vrc_contact=self.vrc_contact_var.get().strip())
         try:
             CONFIG_PATH.write_text(json.dumps(self.cfg, indent=2),
                                    encoding="utf-8")
@@ -938,10 +954,26 @@ class App:
     def _get_api(self):
         if self.vrc_api is None:
             import vrc_api as mod
-            self.vrc_api = mod.VRChatAPI()
+            self.vrc_api = mod.VRChatAPI(
+                contact=self.cfg.get("vrc_contact", ""))
         return self.vrc_api
 
+    def _current_contact(self) -> str:
+        """Contact string from the Settings field; also refresh the API's
+        User-Agent so a just-edited value takes effect without a restart."""
+        c = (self.vrc_contact_var.get().strip()
+             if hasattr(self, "vrc_contact_var")
+             else self.cfg.get("vrc_contact", ""))
+        self.cfg["vrc_contact"] = c
+        if self.vrc_api is not None:
+            import vrc_api as mod
+            self.vrc_api.s.headers["User-Agent"] = mod.build_user_agent(c)
+        return c
+
     def _vrc_check_session(self) -> None:
+        import vrc_api as mod
+        if not mod.is_valid_contact(self._current_contact()):
+            return   # VRChat would 403 without a real contact
         try:
             user = self._get_api().check_session()
             if user:
@@ -952,6 +984,12 @@ class App:
             pass
 
     def vrc_login(self) -> None:
+        import vrc_api as mod
+        if not mod.is_valid_contact(self._current_contact()):
+            self.vrc_status_var.set(
+                "VRChat needs your real contact info first — fill in the "
+                "'Contact' field above (your email or Discord).")
+            return
         user = self.vrc_user_var.get().strip()
         pw = self.vrc_pass_var.get()
         if not user or not pw:

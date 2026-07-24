@@ -22,8 +22,10 @@ Then:
 2. Copy `config.example.json` → `config.json` and `triggers.example.txt` →
    `triggers.txt`, then edit to taste. (Both real files are gitignored so your
    settings and trigger list stay local.)
-3. If you use the VRChat API features, set your own contact string in
-   `USER_AGENT` at the top of `vrc_api.py`.
+3. If you use the VRChat API features, set your **Contact** (email or Discord)
+   on the Settings tab — VRChat's API refuses requests (HTTP 403) unless the
+   User-Agent carries real contact info. It's stored only in your local
+   `config.json` (`vrc_contact`), never in the repo.
 
 Run `gui.bat` (or `pythonw gui.py`).
 

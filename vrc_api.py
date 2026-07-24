@@ -18,10 +18,22 @@ import requests
 from autoclip import HERE
 
 API = "https://api.vrchat.cloud/api/1"
-# VRChat asks API clients to identify themselves and include a contact.
-# Put your own email/handle here so VRChat can reach you if needed.
-USER_AGENT = "VRC-ModTool/0.1 your-contact@example.com"
+APP_NAME = "VRC-ModTool"
+APP_VERSION = "0.1"
 COOKIE_PATH = HERE / "vrc_cookies.txt"
+
+
+def build_user_agent(contact: str) -> str:
+    """VRChat's WAF (403 / waf_code 13799) blocks requests unless the
+    User-Agent names the app, a version, and REAL contact info — placeholders
+    like 'example.com' are rejected. `contact` should be your own email/handle,
+    kept in local config so it never lands in the public repo."""
+    return f"{APP_NAME}/{APP_VERSION} {(contact or '').strip()}".strip()
+
+
+def is_valid_contact(contact: str) -> bool:
+    c = (contact or "").strip().lower()
+    return bool(c) and "example.com" not in c and "your-contact" not in c
 
 
 class VRChatAPIError(RuntimeError):
@@ -29,9 +41,9 @@ class VRChatAPIError(RuntimeError):
 
 
 class VRChatAPI:
-    def __init__(self, cookie_path: Path = COOKIE_PATH):
+    def __init__(self, cookie_path: Path = COOKIE_PATH, contact: str = ""):
         self.s = requests.Session()
-        self.s.headers["User-Agent"] = USER_AGENT
+        self.s.headers["User-Agent"] = build_user_agent(contact)
         jar = LWPCookieJar(str(cookie_path))
         try:
             jar.load(ignore_discard=True)
