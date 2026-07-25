@@ -347,6 +347,45 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                 out.append(r)
         return out
 
+    # ---------------- one player ----------------
+    @app.get("/player/{user_id}", response_class=HTMLResponse)
+    def player_page(request: Request, user_id: str, name: str = ""):
+        sess = require(request)
+        cached = database.all_users().get(user_id, {})
+        display = name or cached.get("name", "") or user_id
+
+        # Live profile is a bonus, not a requirement: the record below is the
+        # point, and VRChat being slow or the session being stale must not take
+        # the page down with it.
+        profile, profile_error = None, ""
+        api = sessions.client(request.cookies.get(SESSION_COOKIE))
+        if not api:
+            profile_error = ("no live VRChat session — sign in again to load "
+                             "the bio and pronouns")
+        elif _USR_ID.fullmatch(user_id):
+            try:
+                profile = api.get_public_profile(user_id)
+            except Exception as e:
+                profile_error = f"couldn't load the VRChat profile: {e}"[:160]
+        else:
+            profile_error = "not a usr_ id, so there is no profile to load"
+
+        if profile and profile.get("displayName"):
+            display = profile["displayName"]
+
+        history = database.history_for_user(user_id, display)
+        latest = agecheck.latest_by_user(history["age_checks"])
+        note_word = (cfg.get("note_filter") or "").strip().lower()
+        note = cached.get("note", "")
+        return page(
+            request, "player.html", session=sess, user_id=user_id,
+            display=display, profile=profile, profile_error=profile_error,
+            trust=_trust_rank(profile), cached=cached, note=note,
+            tagged=bool(note_word and note_word in note.lower()),
+            staff=database.all_staff().get(user_id),
+            history=history, latest_check=latest.get(user_id),
+            verdicts=agecheck.VERDICTS)
+
     # ---------------- kick log (manual) ----------------
     @app.get("/kick-log", response_class=HTMLResponse)
     def kick_log_page(request: Request, ok: str = "", err: str = ""):
@@ -732,6 +771,18 @@ def _user_id_from(text: str) -> str:
     """Accept a bare usr_ id or a pasted profile link, as moderators send both."""
     match = _USR_ID.search(text or "")
     return match.group(1) if match else ""
+
+
+#: VRChat exposes trust as tags rather than a rank; highest present wins.
+_TRUST = [("system_trust_veteran", "Trusted User"),
+          ("system_trust_trusted", "Known User"),
+          ("system_trust_known", "User"),
+          ("system_trust_basic", "New User")]
+
+
+def _trust_rank(profile: dict | None) -> str:
+    tags = set((profile or {}).get("trustTags") or [])
+    return next((label for tag, label in _TRUST if tag in tags), "Visitor")
 
 
 def _safe_next(value: str, fallback: str) -> str:

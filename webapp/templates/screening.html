@@ -80,7 +80,9 @@
     <tr id="p{{ r.user_id or loop.index }}"
         class="{{ 'row-unverified' if r.state != 'verified' }}">
       <td>
-        <strong>{{ r.name }}</strong>
+        {% if r.user_id %}
+        <a href="/player/{{ r.user_id }}?name={{ r.name|urlencode }}"><strong>{{ r.name }}</strong></a>
+        {% else %}<strong>{{ r.name }}</strong>{% endif %}
         {% if r.is_mod %}
         <span class="pill {{ 'pill-hr' if r.role == 'HR' else 'pill-mod' }}"
               title="{{ 'Listed as ' ~ r.role ~ ' on the moderator allowlist' if r.role in ('HR', 'Mod')

@@ -154,6 +154,17 @@ class VRChatAPI:
         r.raise_for_status()
         return r.json()
 
+    def get_public_profile(self, user_id: str) -> dict:
+        """Public-facing profile: bio, pronouns, badges, trust tags.
+
+        Separate from get_user(): this is what the profile page shows anyone,
+        and it carries `pronouns` and VRChat's own `ageVerified` /
+        `ageVerificationStatus`, which /users/{id} does not.
+        """
+        r = self.s.get(f"{API}/profile/{user_id}", timeout=15)
+        r.raise_for_status()
+        return r.json()
+
     def get_group_audit_logs(self, group_id: str, *, n: int = 60,
                              event_types: str = "",
                              start_date: str = "") -> dict:

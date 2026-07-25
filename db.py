@@ -565,6 +565,49 @@ class Database:
                       "WHERE group_id=?", (group_id,))
         return (r["t"] if r and r["t"] else 0.0)
 
+    # ---------------- one player's whole record ----------------
+    def history_for_user(self, user_id: str, name: str = "") -> dict:
+        """Everything this tool holds on one player.
+
+        Incidents keep their roster as a JSON blob, so the LIKE is only a cheap
+        prefilter — membership is confirmed in Python, otherwise a user id that
+        appears in some other field would produce false hits.
+        """
+        incidents = []
+        if user_id:
+            rows = self._query(
+                "SELECT * FROM incidents WHERE players LIKE ? "
+                "AND COALESCE(deleted, 0) = 0 ORDER BY created_at DESC",
+                (f"%{user_id}%",))
+            for r in rows:
+                inc = self._row_to_incident(r)
+                if any(p.get("user_id") == user_id for p in inc["players"]):
+                    incidents.append(inc)
+
+        # Players who were logged before ids were captured only have a name.
+        by_name = []
+        if name:
+            rows = self._query(
+                "SELECT * FROM incidents WHERE players LIKE ? "
+                "AND COALESCE(deleted, 0) = 0 ORDER BY created_at DESC",
+                (f"%{name}%",))
+            seen = {i["id"] for i in incidents}
+            for r in rows:
+                inc = self._row_to_incident(r)
+                if inc["id"] in seen:
+                    continue
+                if any(not p.get("user_id") and p.get("name") == name
+                       for p in inc["players"]):
+                    by_name.append(inc)
+
+        return {
+            "incidents": incidents,
+            "incidents_by_name": by_name,
+            "age_checks": self.age_checks_for_user(user_id) if user_id else [],
+            "actions": [a for a in self.pending_actions(include_done=True)
+                        if a["target_id"] == user_id] if user_id else [],
+        }
+
     # ---------------- personal reason shortcuts ----------------
     def user_reasons(self, user_id: str) -> list[str]:
         rows = self._query(

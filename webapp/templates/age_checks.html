@@ -67,8 +67,12 @@
   {% for c in checks %}
     <tr class="{{ 'row-unverified' if c.verdict == 'under' }}">
       <td class="nowrap dim">{{ fmt_time(c.created_at) }}</td>
-      <td><strong>{{ c.name }}</strong>
-          {% if c.user_id %}<br><code class="uid">{{ c.user_id }}</code>{% endif %}</td>
+      <td>
+        {% if c.user_id %}
+        <a href="/player/{{ c.user_id }}?name={{ c.name|urlencode }}"><strong>{{ c.name }}</strong></a>
+        <br><code class="uid">{{ c.user_id }}</code>
+        {% else %}<strong>{{ c.name }}</strong>{% endif %}
+      </td>
       <td><span class="pill v-{{ c.verdict }}">{{ verdict_label[c.verdict] }}</span>
           {% if c.incident_id %}<br><a class="uid" href="/incidents/{{ c.incident_id }}">incident →</a>{% endif %}</td>
       <td class="num">{{ c.reported_age or "—" }}</td>

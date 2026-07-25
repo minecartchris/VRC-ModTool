@@ -455,3 +455,36 @@ So the feature switches on whenever someone holding `group-audit-view` signs in
 — usually senior staff — and everyone else benefits without needing the
 permission themselves. When nobody eligible is signed in, `/pending` says so
 and points at the Kick Log instead.
+
+## Player pages
+
+Clicking a name on Screening, an age-check row or an incident roster opens
+`/player/{usr_id}` — everything known about one person in one place.
+
+**From VRChat** (`GET /profile/{userId}`, read with your own session): bio,
+**pronouns**, profile icon, trust rank derived from `trustTags`, languages,
+represented group, bio links, and VRChat's own `ageVerified` /
+`ageVerificationStatus`.
+
+That last one is shown *separately* from this tool's age checks and never
+merged with them: VRChat verifying an adult is a different claim from a
+moderator judging someone in-range for a teen group, and collapsing the two
+would lose the distinction that matters.
+
+**From this database**: every incident naming them, every age check with who
+recorded it, your cached VRChat note, their groups, and their Mod/HR rank if
+they're on the allowlist. You can record a verdict without leaving the page.
+
+Two deliberate details:
+
+- **Name-only matches are listed apart.** Records imported from before user ids
+  were captured can only be matched on display name, which is not proof of
+  identity — VRChat display names are changeable and reusable, so those appear
+  under "possible matches" rather than as fact.
+- **The page never depends on VRChat being up.** If the API is slow, the
+  session is stale, or the id is malformed, the profile section says so and the
+  history — the part that matters — still renders.
+
+Bio links are shown as their full URL and carry `rel="noopener noreferrer
+nofollow"`: they are attacker-controlled strings, so a moderator should see
+where one goes before deciding to follow it.

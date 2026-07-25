@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}{{ display }} — Mod Suite{% endblock %}
+{% block content %}
+<div>
+  <a class="link" href="/screening">← Screening</a>
+  <h1 style="margin-top:6px">
+    {{ display }}
+    {% if staff %}
+    <span class="pill {{ 'pill-hr' if staff.role == 'HR' else 'pill-mod' }}"
+          title="On the moderator allowlist">{{ icon("shield", 12) }} {{ staff.role|upper }}</span>
+    {% endif %}
+    {% if latest_check %}
+    <span class="pill v-{{ latest_check.verdict }}">{{ verdict_label[latest_check.verdict] }}</span>
+    {% elif tagged %}
+    <span class="pill v-in_range">{{ icon("check", 12) }} tagged in VRChat</span>
+    {% endif %}
+  </h1>
+  <p class="lead"><code class="uid">{{ user_id }}</code>
+    {% if user_id.startswith("usr_") %}
+    · <a href="https://vrchat.com/home/user/{{ user_id }}" target="_blank"
+         rel="noopener noreferrer">open in VRChat {{ icon("open", 13) }}</a>
+    {% endif %}
+  </p>
+</div>
+
+<div class="two-col">
+  <div style="display:flex;flex-direction:column;gap:24px">
+    <section class="card">
+      <h2>VRChat profile</h2>
+      {% if profile_error %}
+      <p class="banner banner-warn" style="margin:0">{{ icon("warning", 18) }}
+        {{ profile_error }}</p>
+      {% elif profile %}
+      <div class="profile-head">
+        {% if profile.iconUrl %}
+        <img class="profile-icon" src="{{ profile.iconUrl }}" alt=""
+             referrerpolicy="no-referrer">
+        {% endif %}
+        <div>
+          <div class="profile-facts">
+            {% if profile.pronouns %}
+            <span class="pill pill-mut">{{ profile.pronouns }}</span>
+            {% endif %}
+            <span class="pill pill-mut">{{ trust }}</span>
+            {% if profile.hasVrcPlus %}<span class="pill pill-mut">VRC+</span>{% endif %}
+            {# VRChat's own age verification, which is not the same thing as
+               this tool's age checks — show it plainly, don't merge them. #}
+            {% if profile.ageVerified %}
+            <span class="pill v-in_range">{{ icon("check", 12) }} age-verified by VRChat</span>
+            {% elif profile.ageVerificationStatus and profile.ageVerificationStatus != "hidden" %}
+            <span class="pill pill-warn">VRChat age status: {{ profile.ageVerificationStatus }}</span>
+            {% else %}
+            <span class="pill pill-mut" title="They have hidden it, or VRChat has not verified them">
+              VRChat age status: hidden</span>
+            {% endif %}
+            {% for lang in profile.languages or [] %}
+            <span class="pill pill-mut">{{ lang }}</span>
+            {% endfor %}
+          </div>
+          {% if profile.representedGroup and profile.representedGroup.name %}
+          <p class="dim" style="margin:8px 0 0">Representing
+            <strong>{{ profile.representedGroup.name }}</strong></p>
+          {% endif %}
+        </div>
+      </div>
+
+      <h3 style="margin-top:20px">Bio</h3>
+      {% if profile.bio %}
+      <pre class="mono bio">{{ profile.bio }}</pre>
+      {% else %}<p class="dim">Empty.</p>{% endif %}
+
+      {% if profile.bioLinks %}
+      <h3 style="margin-top:16px">Bio links</h3>
+      <ul class="list">
+        {% for link in profile.bioLinks %}{% if link %}
+        {# Full URL shown as the text so it is obvious where it goes before
+           clicking — these are attacker-controlled strings. #}
+        <li><a href="{{ link }}" target="_blank"
+               rel="noopener noreferrer nofollow">{{ link }}</a></li>
+        {% endif %}{% endfor %}
+      </ul>
+      {% endif %}
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Your VRChat note</h2>
+      {% if note %}<pre class="mono">{{ note }}</pre>
+      {% else %}<p class="dim">No note on this player.</p>{% endif %}
+      {% if cached.groups %}
+      <h3 style="margin-top:16px">Groups</h3>
+      <p class="dim">{% for g in cached.groups %}{{ g.name or g.id }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:24px">
+    <section class="card">
+      <div class="card-head">
+        <h2 style="margin:0">Age checks</h2>
+        <span class="pill pill-mut">{{ history.age_checks|length }}</span>
+      </div>
+      {% if history.age_checks %}
+      <ul class="list">
+        {% for c in history.age_checks %}
+        <li>
+          <span class="pill v-{{ c.verdict }}">{{ verdict_label[c.verdict] }}</span>
+          {% if c.reported_age %}<span class="dim">age {{ c.reported_age }}</span>{% endif %}
+          {% if c.note %}<span class="dim">{{ c.note }}</span>{% endif %}
+          <span class="dim" style="margin-left:auto">
+            {{ c.checked_by or c.source }} · {{ fmt_time(c.created_at) }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="dim">Never age-checked.</p>{% endif %}
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2 style="margin:0">Moderation history</h2>
+        <span class="pill {{ 'v-under' if history.incidents else 'pill-mut' }}">
+          {{ history.incidents|length }}</span>
+      </div>
+      {% if history.incidents %}
+      <ul class="list">
+        {% for i in history.incidents %}
+        <li>
+          <a href="/incidents/{{ i.id }}">{{ i.trigger or "(no trigger)" }}</a>
+          <span class="pill st-{{ i.status }}">{{ i.status }}</span>
+          <span class="dim" style="margin-left:auto">
+            {% if i.reported_by %}{{ i.reported_by }} · {% endif %}{{ fmt_time(i.created_at) }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="dim">Nothing on record.</p>{% endif %}
+
+      {% if history.incidents_by_name %}
+      <h3 style="margin-top:20px">Possible matches by name</h3>
+      <p class="dim" style="margin-bottom:8px">Older records that stored a name
+        but no user id, so this is a name match — not proof it's the same person.</p>
+      <ul class="list">
+        {% for i in history.incidents_by_name %}
+        <li><a href="/incidents/{{ i.id }}">{{ i.trigger }}</a>
+          <span class="dim" style="margin-left:auto">{{ fmt_time(i.created_at) }}</span></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Record a check</h2>
+      <form method="post" action="/age-checks" class="row-form">
+        <input type="hidden" name="name" value="{{ display }}">
+        <input type="hidden" name="user_id" value="{{ user_id }}">
+        <input type="hidden" name="next" value="{{ current_url }}">
+        <input name="reported_age" placeholder="age" inputmode="numeric">
+        <button class="btn-sm" name="verdict" value="over">Over</button>
+        <button class="btn-sm btn-danger" name="verdict" value="under">Under</button>
+        <button class="btn-sm btn-primary" name="verdict" value="in_range">In range</button>
+      </form>
+    </section>
+  </div>
+</div>
+{% endblock %}

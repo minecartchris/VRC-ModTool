@@ -65,8 +65,12 @@
       {% if inc.players %}
       <ul class="list">
         {% for p in inc.players|sort(attribute='name') %}
-        <li><strong>{{ p.name }}</strong>
-          {% if p.user_id %}<code class="uid">{{ p.user_id }}</code>{% endif %}</li>
+        <li>
+          {% if p.user_id %}
+          <a href="/player/{{ p.user_id }}?name={{ p.name|urlencode }}"><strong>{{ p.name }}</strong></a>
+          <code class="uid">{{ p.user_id }}</code>
+          {% else %}<strong>{{ p.name }}</strong>{% endif %}
+        </li>
         {% endfor %}
       </ul>
       {% else %}<p class="dim">Roster wasn't captured.</p>{% endif %}
