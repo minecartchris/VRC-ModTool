@@ -423,6 +423,23 @@ class Database:
         self._exec("DELETE FROM web_sessions WHERE expires_at < ?",
                    (time.time(),))
 
+    # ---------------- change detection ----------------
+    def state_version(self) -> str:
+        """Cheap fingerprint of everything the web pages display.
+
+        Polled by the browser every few seconds, so it must stay a handful of
+        indexed MAX/COUNT lookups rather than reading any rows. Counts are in
+        it too, so a hard delete changes the fingerprint even though it lowers
+        no timestamp.
+        """
+        r = self._one("""
+            SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
+                   (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
+                   (SELECT COALESCE(MAX(updated_at), 0) FROM rosters)    AS r,
+                   (SELECT COUNT(*) FROM incidents)                      AS ic,
+                   (SELECT COUNT(*) FROM age_checks)                     AS ac""")
+        return (f"{r['i']:.3f}-{r['a']:.3f}-{r['r']:.3f}-{r['ic']}-{r['ac']}")
+
     # ---------------- sync cursors ----------------
     def sync_cursor(self, peer: str) -> dict:
         r = self._one("SELECT * FROM sync_state WHERE peer=?", (peer,))
@@ -468,6 +485,11 @@ class Database:
         # a first sync sends real history instead of skipping it.
         self._exec("UPDATE incidents SET updated_at = COALESCE(created_at, 0) "
                    "WHERE updated_at IS NULL")
+        # Created here rather than in _SCHEMA: the column it indexes only
+        # exists after the ALTER TABLE above. Serves sync pulls and the
+        # state_version() poll.
+        self._exec("CREATE INDEX IF NOT EXISTS ix_incidents_updated "
+                   "ON incidents(updated_at)")
 
     def _migrate_json(self) -> None:
         if self._count("incidents") == 0 and OLD_INCIDENTS.exists():

@@ -15,6 +15,28 @@
   from VRChat's local log, so a desktop client has to be running with sync on.</p>
 {% endif %}
 
+{% if counts.all %}
+<nav class="chips" aria-label="Filter roster">
+  {% for key, label in [("", "Everyone"), ("unverified", "Not verified"),
+                        ("verified", "Verified"), ("unchecked", "Unchecked"),
+                        ("under", "Under range"), ("over", "Over range")] %}
+    {% if counts[key or "all"] or show == key or not key %}
+    <a class="chip {{ 'on' if show == key }} c-{{ key or 'all' }}"
+       href="/screening{% if key %}?show={{ key }}{% endif %}">
+      {{ label }} <span class="chip-n">{{ counts[key or "all"] }}</span>
+    </a>
+    {% endif %}
+  {% endfor %}
+</nav>
+
+<form class="filters" method="get" action="/screening">
+  {% if show %}<input type="hidden" name="show" value="{{ show }}">{% endif %}
+  <input name="q" value="{{ q }}" placeholder="Search name or user ID…">
+  <button type="submit">Search</button>
+  {% if q %}<a class="link" href="/screening{% if show %}?show={{ show }}{% endif %}">clear</a>{% endif %}
+</form>
+{% endif %}
+
 {% if rows %}
 <div class="table-wrap">
 <table>
@@ -24,7 +46,7 @@
   </thead>
   <tbody>
   {% for r in rows %}
-    <tr>
+    <tr class="{{ 'row-unverified' if r.state != 'verified' }}">
       <td><strong>{{ r.name }}</strong>
           {% if r.user_id %}<br><code class="dim">{{ r.user_id }}</code>{% endif %}</td>
       <td>
@@ -66,5 +88,8 @@
   </tbody>
 </table>
 </div>
+{% elif counts.all %}
+<p class="dim">Nobody in the instance matches that filter
+  {%- if show == "unverified" %} — everyone present is verified{% endif %}.</p>
 {% endif %}
 {% endblock %}

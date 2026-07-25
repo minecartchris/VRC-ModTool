@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Mod Suite{% endblock %}</title>
+  {% if state_version %}<meta name="state-version" content="{{ state_version }}">{% endif %}
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>">
 </head>
@@ -17,11 +18,15 @@
     <a href="/screening">Screening</a>
   </nav>
   <div class="who">
+    <button id="live-toggle" class="live-toggle" type="button">live</button>
     <span class="name" title="{{ session.user_id }}">{{ session.name }}</span>
     <span class="badge staff" title="Staff groups: {{ session.groups|join(', ') }}">staff</span>
     <form method="post" action="/logout"><button class="link">Sign out</button></form>
   </div>
 </header>
+<button id="stale-pill" class="stale-pill" type="button" hidden>
+  New activity — click to refresh
+</button>
 {% if not live_api %}
 <p class="notice">
   This session has no live VRChat connection (the server restarted since you
@@ -33,5 +38,7 @@
 <main>
 {% block content %}{% endblock %}
 </main>
+
+{% if session %}<script src="/static/refresh.js"></script>{% endif %}
 </body>
 </html>

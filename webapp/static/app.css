@@ -58,6 +58,50 @@ code { font: 13px/1.4 Consolas, ui-monospace, monospace; }
 .warn   { background: #2b2b1e; color: var(--yellow); border: 1px solid #4a4a2a; }
 .error  { background: #3a1f1f; color: #ff9a9a; border: 1px solid #6a2a2a; }
 
+/* ---------- live refresh ---------- */
+.live-toggle {
+  font-size: 0.76rem; padding: 1px 9px 1px 18px; border-radius: 10px;
+  background: #1d3b36; color: var(--green); border: 1px solid #2e5b53;
+  position: relative;
+}
+.live-toggle::before {
+  content: ""; position: absolute; left: 7px; top: 50%;
+  width: 6px; height: 6px; margin-top: -3px; border-radius: 50%;
+  background: var(--green); animation: pulse 2s ease-in-out infinite;
+}
+.live-toggle.off { background: var(--panel-2); color: var(--dim); border-color: var(--line); }
+.live-toggle.off::before { background: var(--dim); animation: none; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .live-toggle::before { animation: none; }
+}
+
+.stale-pill {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+  z-index: 50; background: #1e3247; color: #cfe6ff; border: 1px solid #2f4d6d;
+  border-radius: 20px; padding: 9px 18px; font-size: 0.88rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+.stale-pill:hover { background: #24405e; }
+
+/* ---------- filter chips ---------- */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 4px; }
+.chip {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 5px 12px; border-radius: 16px; font-size: 0.86rem;
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+}
+.chip:hover { border-color: var(--blue); text-decoration: none; }
+.chip.on { background: #1e3247; border-color: var(--blue); color: #cfe6ff; }
+.chip-n { font-size: 0.78rem; color: var(--dim); font-variant-numeric: tabular-nums; }
+.chip.on .chip-n { color: #cfe6ff; }
+/* The whole point of the unverified view is that it should catch your eye. */
+.chip.c-unverified .chip-n, .chip.c-under .chip-n { color: var(--red); font-weight: 600; }
+.chip.c-unverified.on, .chip.c-under.on { background: #3a1f1f; border-color: #6a2a2a; color: #ffc9c9; }
+.chip.c-unverified.on .chip-n, .chip.c-under.on .chip-n { color: #ffc9c9; }
+
+tr.row-unverified td:first-child { box-shadow: inset 3px 0 0 var(--red); }
+
 /* ---------- badges ---------- */
 .badge {
   display: inline-block; padding: 1px 8px; border-radius: 10px;

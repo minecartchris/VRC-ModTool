@@ -50,6 +50,48 @@ the same SQLite file in WAL mode, so they already share everything and sync is
 optional. It matters when the server lives elsewhere, or when a second
 moderator's PC files incidents into the same set.
 
+## Live updates
+
+Pages refresh themselves, so an open browser tracks the instance the way the
+desktop app does. Every few seconds the page asks `/api/state` for a
+fingerprint of the record set and reloads if it moved — someone joining the
+instance, another moderator filing a check, the listener catching a trigger.
+
+Two things keep that from being annoying:
+
+- **It never reloads while you're mid-entry.** If any field has something typed
+  in it — a half-entered age, an unsaved note — the page shows a *New activity*
+  pill at the bottom instead and waits for you to click it. Reloading between
+  someone typing an age and clicking a verdict button is how you file the wrong
+  verdict on the wrong player.
+- **Background tabs don't poll**, and a tab refreshes the moment you switch back
+  to it.
+
+The **live / paused** button in the header turns it off; the choice is
+remembered in that browser.
+
+## Filtering the roster
+
+The Screening page has a chip for each state, with counts:
+
+| Chip | Who it shows |
+|---|---|
+| Everyone | the whole instance |
+| **Not verified** | **anyone not cleared — unchecked, under range, or over range** |
+| Verified | cleared by an in-range check, or already carrying the note tag |
+| Unchecked | nobody has looked at them yet |
+| Under range / Over range | their latest verdict |
+
+*Not verified* is deliberately broader than *Unchecked*: a player marked under
+or over range has been looked at but is not cleared, and folding them in with
+the verified crowd is how people get missed. Unverified rows also carry a red
+edge marker in the full list. Chips with a count of zero are hidden.
+
+A player counts as verified two ways — an in-range check recorded here, or the
+verification word already in your VRChat note. That second path is what the
+desktop app has always used, including for auto-verified staff-group members,
+so the two front ends agree on who is cleared.
+
 ## Hosting it for a team
 
 ```bash
@@ -101,7 +143,8 @@ web writes statuses, notes and age checks.
 | `/` | counts, live instance, recent activity |
 | `/incidents`, `/incidents/{id}` | list/search, detail with evidence, notes, status, paste-ready report |
 | `/age-checks` | log + record a check (over/under also files an incident) |
-| `/screening` | live roster with per-player verdict buttons and VRChat note tagging |
+| `/screening` | live roster, filterable by verification state, with per-player verdict buttons and VRChat note tagging |
+| `/api/state` | change fingerprint polled by open pages |
 | `/api/sync/push`, `/api/sync/pull`, `/api/sync/roster` | desktop sync; `X-Sync-Token` header |
 | `/healthz` | liveness |
 

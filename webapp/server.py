@@ -71,6 +71,9 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         sess = ctx.pop("session", None)
         return templates.TemplateResponse(request, name, {
             "session": sess, "cfg": cfg,
+            # What the page was rendered from; the browser polls /api/state
+            # and reloads when this moves. See static/refresh.js.
+            "state_version": database.state_version() if sess else "",
             "live_api": bool(sessions.client(
                 request.cookies.get(SESSION_COOKIE))),
             **ctx})
@@ -247,7 +250,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     # ---------------- screening ----------------
     @app.get("/screening", response_class=HTMLResponse)
-    def screening(request: Request):
+    def screening(request: Request, show: str = "", q: str = ""):
         sess = require(request)
         rosters = database.all_rosters()
         current = rosters[0] if rosters else None
@@ -260,16 +263,39 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             uid = p.get("user_id") or ""
             rec = cached.get(uid, {})
             note = rec.get("note", "")
+            tagged = bool(note_word and note_word in note.lower())
+            check = latest.get(uid)
             rows.append({
                 "name": p.get("name", ""), "user_id": uid,
-                "note": note,
-                "tagged": bool(note_word and note_word in note.lower()),
+                "note": note, "tagged": tagged,
                 "groups": rec.get("groups", []),
-                "check": latest.get(uid),
+                "check": check,
+                "state": _screen_state(check, tagged),
             })
+
+        counts = {
+            "all": len(rows),
+            "unverified": sum(1 for r in rows if r["state"] != "verified"),
+            "verified": sum(1 for r in rows if r["state"] == "verified"),
+            "unchecked": sum(1 for r in rows if r["state"] == "unchecked"),
+            "under": sum(1 for r in rows if r["state"] == "under"),
+            "over": sum(1 for r in rows if r["state"] == "over"),
+        }
+        # Unverified is deliberately broader than unchecked: someone marked
+        # under or over range has been looked at but is not cleared, and
+        # hiding them behind "checked" is how people get missed.
+        if show == "unverified":
+            rows = [r for r in rows if r["state"] != "verified"]
+        elif show in ("verified", "unchecked", "under", "over"):
+            rows = [r for r in rows if r["state"] == show]
+        if q:
+            needle = q.lower()
+            rows = [r for r in rows
+                    if needle in f"{r['name']} {r['user_id']}".lower()]
+
         return page(request, "screening.html", session=sess, rows=rows,
-                    current=current, rosters=rosters,
-                    verdicts=agecheck.VERDICTS)
+                    current=current, rosters=rosters, show=show, q=q,
+                    counts=counts, verdicts=agecheck.VERDICTS)
 
     @app.post("/screening/tag")
     def screening_tag(request: Request, user_id: str = Form(...),
@@ -366,6 +392,13 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                                payload.get("client_name", ""))
         return {"ok": True}
 
+    @app.get("/api/state")
+    def api_state(request: Request):
+        """Polled by open pages to notice new records without a full reload."""
+        if not session_of(request):
+            return JSONResponse({"error": "signed out"}, status_code=401)
+        return {"version": database.state_version()}
+
     @app.get("/healthz")
     def healthz():
         return {"ok": True, "time": time.time()}
@@ -406,6 +439,18 @@ def _fmt_ago(ts: float | None) -> str:
         if delta >= size:
             return f"{int(delta // size)}{unit} ago"
     return "just now"
+
+
+def _screen_state(check: dict | None, tagged: bool) -> str:
+    """Where a player stands: verified | under | over | unchecked.
+
+    Two things can clear someone — an in-range check recorded here, or the
+    verification word already sitting in your VRChat note (which is how the
+    desktop app has always tracked it, including auto-verified group members).
+    """
+    if check:
+        return "verified" if check["verdict"] == "in_range" else check["verdict"]
+    return "verified" if tagged else "unchecked"
 
 
 def _short_instance(instance_id: str) -> str:
