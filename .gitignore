@@ -42,3 +42,9 @@ Thumbs.db
 
 # ---- Roster agent settings (generated on first run) ----
 agent_config.json
+
+# ---- Agent build artifacts ----
+dist/
+build/
+*.spec
+agent_baked.py

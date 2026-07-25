@@ -31,8 +31,28 @@ import requests
 
 import vrc_log
 
-CONFIG_PATH = Path(__file__).resolve().parent / "agent_config.json"
-DESKTOP_CONFIG = Path(__file__).resolve().parent / "config.json"
+def _base_dir() -> Path:
+    """Where to keep agent_config.json.
+
+    Next to the .exe when frozen — PyInstaller unpacks the bundle to a temp
+    directory that is deleted on exit, so writing there would silently lose
+    the settings on every run.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+CONFIG_PATH = _base_dir() / "agent_config.json"
+DESKTOP_CONFIG = _base_dir() / "config.json"
+
+# Written by build_agent.py when packaging the .exe, so a moderator can just
+# run it. The token baked in here is the roster-only one — it cannot read
+# incidents or age checks. Absent in a normal source checkout.
+try:
+    from agent_baked import SERVER as BAKED_SERVER, TOKEN as BAKED_TOKEN
+except ImportError:
+    BAKED_SERVER = BAKED_TOKEN = ""
 
 #: Prove we're alive this often even when nobody joins or leaves. Must stay
 #: well under the server's 180s staleness cutoff.
@@ -42,11 +62,17 @@ POLL = 3.0
 
 
 def load_settings(args) -> dict:
-    """CLI beats agent_config.json, which beats the desktop app's config."""
-    cfg = {"server": "", "token": "", "name": "", "client_id": ""}
-    for path, keys in ((DESKTOP_CONFIG, ("sync_url", "sync_token",
-                                         "sync_client_name", "sync_client_id")),
-                       (CONFIG_PATH, ("server", "token", "name", "client_id"))):
+    """CLI beats agent_config.json, which beats the built-in defaults."""
+    cfg = {"server": BAKED_SERVER, "token": BAKED_TOKEN,
+           "name": "", "client_id": ""}
+    # A packaged agent ignores the desktop app's config: it is aimed at the
+    # hosted server it was built for, not whatever a dev machine points at.
+    sources = [(CONFIG_PATH, ("server", "token", "name", "client_id"))]
+    if not BAKED_SERVER:
+        sources.insert(0, (DESKTOP_CONFIG, ("sync_url", "sync_token",
+                                            "sync_client_name",
+                                            "sync_client_id")))
+    for path, keys in sources:
         if not path.exists():
             continue
         try:
@@ -123,6 +149,10 @@ def main() -> None:
     last_revision = -1
     last_sent = 0.0
     complained = False
+    waiting = True
+    # --once still has to wait for the watcher to parse the log; exiting on the
+    # first empty snapshot would send nothing at all.
+    deadline = time.time() + 30 if args.once else None
 
     try:
         while True:
@@ -140,15 +170,24 @@ def main() -> None:
                               f"{len(snap['players'])} players")
                     last_revision, last_sent, complained = (
                         snap["revision"], time.time(), False)
+                    waiting = False
+                    if args.once:
+                        return 0
                 except requests.RequestException as e:
                     if not complained:      # don't spam while it's down
                         print(f"  can't reach the server ({e}); retrying")
                         complained = True
-            if args.once:
-                return
+            elif waiting and deadline is None and time.time() - last_sent > 20:
+                last_sent = time.time()     # reuse as a "said this" marker
+                print("  waiting for VRChat to join a world…")
+            if deadline and time.time() > deadline:
+                print("  gave up waiting for an instance (is VRChat in a "
+                      "world?)")
+                return 1
             time.sleep(POLL)
     except KeyboardInterrupt:
         print("\nStopped.")
+        return 0
     finally:
         watcher.stop()
 

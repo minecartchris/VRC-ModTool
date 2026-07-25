@@ -23,8 +23,13 @@ DEFAULTS = {
     # VRChat's WAF rejects API calls whose User-Agent lacks real contact info.
     "vrc_contact": "",
     # Shared secret desktop clients present on /api/sync/*. Empty disables
-    # the sync API entirely.
+    # the sync API entirely. Grants full read/write to every record.
     "sync_token": "",
+    # Weaker secret accepted only on /api/sync/roster. This is what gets baked
+    # into the distributed roster agent: anyone can pull it out of the binary,
+    # so it must not be able to read incidents or age checks — it can only say
+    # who is in an instance.
+    "roster_token": "",
     "session_hours": 12,
     # Restart the server when a .py file changes. On by default because this
     # is normally run next to the desktop app while you are editing it; signed

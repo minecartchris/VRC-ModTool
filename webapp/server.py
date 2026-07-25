@@ -372,11 +372,21 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         return FileResponse(resolved)
 
     # ---------------- sync API ----------------
-    def require_token(token: str | None) -> None:
-        want = (cfg.get("sync_token") or "").strip()
-        if not want:
+    def require_token(token: str | None, *, allow_roster: bool = False) -> None:
+        """Full sync token, or — on the roster endpoint only — the roster token.
+
+        The roster token ships inside a binary handed to moderators, so it is
+        assumed public. Keeping it off push/pull is what stops a leaked agent
+        from reading age checks and incidents.
+        """
+        accepted = [(cfg.get("sync_token") or "").strip()]
+        if allow_roster:
+            accepted.append((cfg.get("roster_token") or "").strip())
+        accepted = [t for t in accepted if t]
+        if not accepted:
             raise _ApiError(503, "sync API disabled: no sync_token configured")
-        if not token or not secrets.compare_digest(token, want):
+        if not token or not any(secrets.compare_digest(token, t)
+                                for t in accepted):
             raise _ApiError(401, "bad sync token")
 
     @app.exception_handler(_ApiError)
@@ -417,7 +427,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     @app.post("/api/sync/roster")
     def sync_roster(payload: dict = Body(...),
                     x_sync_token: str | None = Header(None)):
-        require_token(x_sync_token)
+        require_token(x_sync_token, allow_roster=True)
         database.upsert_roster(payload.get("client_id", "default"),
                                payload.get("roster", {}),
                                payload.get("client_name", ""))

@@ -325,3 +325,32 @@ ssh root@192.168.1.3 'pct push 101 /tmp/modsuite.tar.gz /tmp/a.tar.gz &&
   empty until someone runs `agent.py` (see above). The pages say so.
 - **No clips or screenshots.** They live on the gaming PC; `serve_media` is
   off. Incident pages show the recorded path instead of the file.
+
+## Packaging the agent as an .exe
+
+```bash
+python build_agent.py --server https://vrcmod.example.cc --token ROSTER_TOKEN
+```
+
+Produces `dist/VRChatRosterAgent.exe` (~15 MB) with the server URL and token
+compiled in. A moderator downloads one file, double-clicks it, and leaves it
+running while they are in the instance — no Python, no dependencies, nothing
+to configure. It writes `agent_config.json` next to itself so the settings
+survive restarts.
+
+Windows SmartScreen warns on first run because the binary is unsigned:
+*More info → Run anyway*.
+
+### Use the roster token, never the sync token
+
+Anyone holding the .exe can pull strings out of it, so treat whatever is baked
+in as public. That is why the server has two secrets:
+
+| Token | Accepted on | Can do |
+|---|---|---|
+| `sync_token` | all of `/api/sync/*` | read and write every incident and age check |
+| `roster_token` | `/api/sync/roster` only | report who is in an instance, nothing else |
+
+Build with `roster_token`. A leaked agent then costs you a bogus roster, not
+your moderation records. Verified: the roster token gets 200 on `/roster` and
+401 on both `/pull` and `/push`.
