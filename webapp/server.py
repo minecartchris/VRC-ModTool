@@ -25,7 +25,7 @@ import db
 import report
 from paths import SHOTS_DIR
 from webapp import config as webconfig
-from webapp.auth import AuthError, SessionManager
+from webapp.auth import AuthError, SessionManager, staff_groups
 
 SESSION_COOKIE = "modsession"
 HERE = Path(__file__).resolve().parent
@@ -51,6 +51,11 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     templates.env.globals.update(
         fmt_time=_fmt_time, fmt_ago=_fmt_ago, verdict_label=agecheck.LABELS,
         short_instance=_short_instance)
+    # Exposed as a global rather than {% import %}: a macro imported in
+    # base.html is not visible to the templates that extend it, and every page
+    # needs icons.
+    templates.env.globals["icon"] = (
+        templates.env.get_template("_icons.html").module.icon)
 
     # ---------------- plumbing ----------------
     @app.exception_handler(LoginRequired)
@@ -265,10 +270,16 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             note = rec.get("note", "")
             tagged = bool(note_word and note_word in note.lower())
             check = latest.get(uid)
+            groups = rec.get("groups", [])
+            # Fellow moderators in the room: worth flagging so nobody wastes a
+            # screening pass on staff. Uses the same group match as sign-in, so
+            # the badge means exactly "could log into this tool".
+            mod_groups = staff_groups(groups, cfg.get("staff_group", ""))
             rows.append({
                 "name": p.get("name", ""), "user_id": uid,
                 "note": note, "tagged": tagged,
-                "groups": rec.get("groups", []),
+                "groups": groups,
+                "is_mod": bool(mod_groups), "staff_groups": mod_groups,
                 "check": check,
                 "state": _screen_state(check, tagged),
             })

@@ -1,62 +1,73 @@
 {% extends "base.html" %}
 {% block title %}Screening — Mod Suite{% endblock %}
 {% block content %}
-<h1>Screening</h1>
-
-{% if current %}
-<p class="dim">
-  <strong>{{ current.world_name or "unknown world" }}</strong>
-  {% if current.instance_id %}· instance #{{ short_instance(current.instance_id) }}{% endif %}
-  · {{ rows|length }} present · reported by
-  {{ current.client_name or current.client_id }} {{ fmt_ago(current.updated_at) }}
-</p>
-{% else %}
-<p class="dim">No desktop client has reported an instance. The roster comes
-  from VRChat's local log, so a desktop client has to be running with sync on.</p>
-{% endif %}
+<div>
+  <h1>Screening</h1>
+  {% if current %}
+  <p class="lead">
+    <strong>{{ current.world_name or "Unknown world" }}</strong>
+    {%- if current.instance_id %} · instance #{{ short_instance(current.instance_id) }}{% endif %}
+    · {{ counts.all }} present · reported by
+    {{ current.client_name or current.client_id }} {{ fmt_ago(current.updated_at) }}
+  </p>
+  {% else %}
+  <p class="lead">No desktop client has reported an instance. The roster comes
+    from VRChat's local log, so a desktop client has to be running with sync on.</p>
+  {% endif %}
+</div>
 
 {% if counts.all %}
-<nav class="chips" aria-label="Filter roster">
-  {% for key, label in [("", "Everyone"), ("unverified", "Not verified"),
-                        ("verified", "Verified"), ("unchecked", "Unchecked"),
-                        ("under", "Under range"), ("over", "Over range")] %}
-    {% if counts[key or "all"] or show == key or not key %}
-    <a class="chip {{ 'on' if show == key }} c-{{ key or 'all' }}"
-       href="/screening{% if key %}?show={{ key }}{% endif %}">
-      {{ label }} <span class="chip-n">{{ counts[key or "all"] }}</span>
-    </a>
-    {% endif %}
-  {% endfor %}
-</nav>
+<div class="card" style="display:flex;flex-direction:column;gap:16px">
+  <nav class="chips" aria-label="Filter roster">
+    {% for key, label in [("", "Everyone"), ("unverified", "Not verified"),
+                          ("verified", "Verified"), ("unchecked", "Unchecked"),
+                          ("under", "Under range"), ("over", "Over range")] %}
+      {% if counts[key or "all"] or show == key or not key %}
+      <a class="chip {{ 'on' if show == key }} c-{{ key or 'all' }}"
+         href="/screening{% if key %}?show={{ key }}{% endif %}">
+        {{ label }} <span class="chip-n">{{ counts[key or "all"] }}</span>
+      </a>
+      {% endif %}
+    {% endfor %}
+  </nav>
 
-<form class="filters" method="get" action="/screening">
-  {% if show %}<input type="hidden" name="show" value="{{ show }}">{% endif %}
-  <input name="q" value="{{ q }}" placeholder="Search name or user ID…">
-  <button type="submit">Search</button>
-  {% if q %}<a class="link" href="/screening{% if show %}?show={{ show }}{% endif %}">clear</a>{% endif %}
-</form>
+  <form class="filters" method="get" action="/screening">
+    {% if show %}<input type="hidden" name="show" value="{{ show }}">{% endif %}
+    <div class="field" style="flex:1;min-width:220px">
+      {{ icon("search") }}
+      <input name="q" value="{{ q }}" placeholder="Search name or user ID…">
+    </div>
+    <button class="btn-primary" type="submit">Search</button>
+    {% if q %}<a class="link" href="/screening{% if show %}?show={{ show }}{% endif %}">clear</a>{% endif %}
+  </form>
+</div>
 {% endif %}
 
 {% if rows %}
 <div class="table-wrap">
 <table>
   <thead>
-    <tr><th>Player</th><th>Status</th><th>VRChat note</th><th>Groups</th>
-        <th>Record</th></tr>
+    <tr><th>Player</th><th>Status</th><th>VRChat note</th><th>Groups</th><th>Record</th></tr>
   </thead>
   <tbody>
   {% for r in rows %}
     <tr class="{{ 'row-unverified' if r.state != 'verified' }}">
-      <td><strong>{{ r.name }}</strong>
-          {% if r.user_id %}<br><code class="dim">{{ r.user_id }}</code>{% endif %}</td>
+      <td>
+        <strong>{{ r.name }}</strong>
+        {% if r.is_mod %}
+        <span class="pill pill-mod" title="In the staff group — {{ r.staff_groups|join(', ') }}">
+          {{ icon("shield", 12) }} MOD</span>
+        {% endif %}
+        {% if r.user_id %}<br><code class="uid">{{ r.user_id }}</code>{% endif %}
+      </td>
       <td>
         {% if r.check %}
-          <span class="badge v-{{ r.check.verdict }}">{{ verdict_label[r.check.verdict] }}</span>
-          <br><span class="dim">{{ fmt_ago(r.check.created_at) }}</span>
+          <span class="pill v-{{ r.check.verdict }}">{{ verdict_label[r.check.verdict] }}</span>
+          <br><span class="uid">{{ fmt_ago(r.check.created_at) }}</span>
         {% elif r.tagged %}
-          <span class="badge v-in_range">tagged in VRChat</span>
+          <span class="pill v-in_range">{{ icon("check", 12) }} tagged in VRChat</span>
         {% else %}
-          <span class="badge unknown">unchecked</span>
+          <span class="pill v-unchecked">unchecked</span>
         {% endif %}
       </td>
       <td class="note">{{ r.note or "—" }}</td>
@@ -70,13 +81,13 @@
           <input type="hidden" name="world_id" value="{{ current.world_id }}">
           <input type="hidden" name="instance_id" value="{{ current.instance_id }}">
           {% endif %}
-          <input name="reported_age" size="3" placeholder="age" inputmode="numeric">
-          <button name="verdict" value="over">Over</button>
-          <button name="verdict" value="under" class="danger-btn">Under</button>
-          <button name="verdict" value="in_range">In range</button>
+          <input name="reported_age" placeholder="age" inputmode="numeric">
+          <button class="btn-sm" name="verdict" value="over">Over</button>
+          <button class="btn-sm btn-danger" name="verdict" value="under">Under</button>
+          <button class="btn-sm btn-primary" name="verdict" value="in_range">In range</button>
         </form>
         {% if r.user_id and live_api %}
-        <form method="post" action="/screening/tag" class="row-form">
+        <form method="post" action="/screening/tag" class="row-form" style="margin-top:4px">
           <input type="hidden" name="user_id" value="{{ r.user_id }}">
           <input type="hidden" name="name" value="{{ r.name }}">
           <button class="link">tag note “{{ cfg.note_filter }}”</button>

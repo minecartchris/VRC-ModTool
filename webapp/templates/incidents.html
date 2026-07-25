@@ -1,35 +1,52 @@
 {% extends "base.html" %}
 {% block title %}Incidents — Mod Suite{% endblock %}
 {% block content %}
-<h1>Incidents <span class="count">{{ incidents|length }}</span></h1>
+<div>
+  <h1>Incidents</h1>
+  <p class="lead">Every trigger and manual filing, with the roster and evidence attached.</p>
+</div>
 
-<form class="filters" method="get" action="/incidents">
-  <input name="q" value="{{ q }}" placeholder="Search trigger, world, player, transcript…">
-  <select name="status">
-    <option value="">any status</option>
-    {% for s in ["new", "reported", "dismissed"] %}
-    <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
-    {% endfor %}
-  </select>
-  <button type="submit">Filter</button>
-  {% if q or status %}<a class="link" href="/incidents">clear</a>{% endif %}
-</form>
+<div class="card">
+  <form class="filters" method="get" action="/incidents">
+    <div class="field" style="flex:1;min-width:220px">
+      {{ icon("search") }}
+      <input name="q" value="{{ q }}" placeholder="Search trigger, world, player, transcript…">
+    </div>
+    <select name="status">
+      <option value="">Any status</option>
+      {% for s in ["new", "reported", "dismissed"] %}
+      <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn-primary" type="submit">Filter</button>
+    {% if q or status %}<a class="link" href="/incidents">clear</a>{% endif %}
+    <span class="dim" style="margin-left:auto">{{ incidents|length }} shown</span>
+  </form>
+</div>
 
 {% if incidents %}
 <div class="table-wrap">
 <table>
   <thead>
-    <tr><th>When</th><th>Trigger</th><th>World</th><th>Players</th><th>Status</th></tr>
+    <tr><th>When</th><th>Trigger</th><th>World</th><th class="num">Players</th>
+        <th>Evidence</th><th>Status</th></tr>
   </thead>
   <tbody>
-  {% for i in incidents %}
-    <tr onclick="location='/incidents/{{ i.id }}'">
-      <td class="nowrap">{{ fmt_time(i.created_at) }}</td>
-      <td><a href="/incidents/{{ i.id }}">{{ i.trigger or "(no trigger)" }}</a>
-          {% if i.origin %}<span class="dim">· {{ i.origin }}</span>{% endif %}</td>
-      <td>{{ i.world_name or "—" }}</td>
-      <td class="num">{{ i.players|length }}</td>
-      <td><span class="badge {{ i.status }}">{{ i.status }}</span></td>
+  {% for inc in incidents %}
+    <tr>
+      <td class="nowrap dim">{{ fmt_time(inc.created_at) }}</td>
+      <td>
+        <a href="/incidents/{{ inc.id }}"><strong>{{ inc.trigger or "(no trigger)" }}</strong></a>
+        {% if inc.reported_by %}<br><span class="uid">by {{ inc.reported_by }}</span>{% endif %}
+      </td>
+      <td>{{ inc.world_name or "—" }}</td>
+      <td class="num">{{ inc.players|length }}</td>
+      <td class="nowrap dim">
+        {% if inc.clip_path %}{{ icon("videocam", 16) }}{% endif %}
+        {% if inc.screenshot_path %}{{ icon("image", 16) }}{% endif %}
+        {% if not inc.clip_path and not inc.screenshot_path %}—{% endif %}
+      </td>
+      <td><span class="pill st-{{ inc.status }}">{{ inc.status }}</span></td>
     </tr>
   {% endfor %}
   </tbody>

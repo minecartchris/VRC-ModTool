@@ -50,6 +50,34 @@ the same SQLite file in WAL mode, so they already share everything and sync is
 optional. It matters when the server lives elsewhere, or when a second
 moderator's PC files incidents into the same set.
 
+## Look and feel
+
+The UI follows the Teen Chillout Mod console (`team-chillo-mod-tool`): the same
+Material 3 dark palette, the 240px navigation rail, the 64px top bar and the
+same card, chip and metric-tile shapes. Tokens are copied from that project's
+`globals.css`, so changing one theme and porting the values keeps the two
+tools looking like one suite.
+
+Two deliberate differences: fonts and icons are **not** fetched from Google.
+This server handles records about minors on a LAN that may have no internet,
+so it makes no third-party requests — icons are inline SVG
+(`templates/_icons.html`) and the type stack falls back to the system UI font.
+An icon *font* that fails to load renders its ligature as raw text, which
+would leave the nav reading "dashboard flag group" in words.
+
+## Who is a moderator
+
+Two places show it:
+
+- **The signed-in user** carries a `MOD` badge in the top bar. Everyone who can
+  sign in has passed the staff-group check, so it is always earned; hover it to
+  see which group granted access.
+- **Players in the roster** get a `MOD` badge on the Screening page when they
+  are in the staff group, using the same match as sign-in. So the badge means
+  exactly "this person could log into this tool" — handy for not wasting a
+  screening pass on a colleague, and for seeing at a glance whether any staff
+  are present in a bad instance.
+
 ## Live updates
 
 Pages refresh themselves, so an open browser tracks the instance the way the

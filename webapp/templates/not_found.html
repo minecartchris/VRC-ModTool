@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Not found — Mod Suite{% endblock %}
 {% block content %}
-<h1>No such {{ what }}</h1>
-<p class="dim">It may have been deleted from the desktop app and synced away.</p>
-<p><a href="/">← Back to overview</a></p>
+<div class="card" style="text-align:center;padding:40px">
+  <p style="color:var(--on-surface-variant)">{{ icon("help", 40) }}</p>
+  <h1>No such {{ what }}</h1>
+  <p class="lead">It may have been deleted from the desktop app and synced away.</p>
+  <p style="margin-top:16px"><a class="link" href="/">← Back to dashboard</a></p>
+</div>
 {% endblock %}

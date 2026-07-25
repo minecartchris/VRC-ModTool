@@ -1,3 +1,4 @@
+{% set path = request.url.path %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -6,39 +7,64 @@
   <title>{% block title %}Mod Suite{% endblock %}</title>
   {% if state_version %}<meta name="state-version" content="{{ state_version }}">{% endif %}
   <link rel="stylesheet" href="/static/app.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='%23c7bfff' d='M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5z'/></svg>">
 </head>
 <body>
 {% if session %}
-<header class="topbar">
-  <a class="brand" href="/">🛡️ Mod Suite</a>
+<aside class="rail">
+  <a class="brand" href="/">
+    <span class="mark">{{ icon("shield", 24) }}</span>
+    <span class="txt"><b>Teen Chillout</b><span>Mod Suite</span></span>
+  </a>
   <nav>
-    <a href="/incidents">Incidents</a>
-    <a href="/age-checks">Age checks</a>
-    <a href="/screening">Screening</a>
+    {% for href, ico, text in [("/", "dashboard", "Dashboard"),
+                               ("/incidents", "flag", "Incidents"),
+                               ("/age-checks", "verified", "Age Checks"),
+                               ("/screening", "group", "Screening")] %}
+      {% set active = (path == href) if href == "/" else path.startswith(href) %}
+      <a class="nav {{ 'on' if active }}" href="{{ href }}">
+        {{ icon(ico) }}<span class="t">{{ text }}</span>
+      </a>
+    {% endfor %}
   </nav>
+  <div class="foot">
+    <form method="post" action="/logout">
+      <button class="nav" type="submit">{{ icon("logout") }}<span class="t">Sign out</span></button>
+    </form>
+  </div>
+</aside>
+
+<header class="topbar">
+  <button id="live-toggle" class="live-toggle" type="button">live</button>
   <div class="who">
-    <button id="live-toggle" class="live-toggle" type="button">live</button>
-    <span class="name" title="{{ session.user_id }}">{{ session.name }}</span>
-    <span class="badge staff" title="Staff groups: {{ session.groups|join(', ') }}">staff</span>
-    <form method="post" action="/logout"><button class="link">Sign out</button></form>
+    {{ icon("account", 22) }}
+    <span class="name">{{ session.name }}</span>
+    {# Everyone who can sign in passed the staff-group check, so the badge is
+       always earned — it names which group granted it. #}
+    <span class="pill pill-mod" title="Signed in via {{ session.groups|join(', ') }}">
+      {{ icon("shield", 13) }} MOD
+    </span>
   </div>
 </header>
-<button id="stale-pill" class="stale-pill" type="button" hidden>
-  New activity — click to refresh
-</button>
-{% if not live_api %}
-<p class="notice">
-  This session has no live VRChat connection (the server restarted since you
-  signed in). Records still work; writing VRChat notes needs a fresh sign-in.
-</p>
-{% endif %}
 {% endif %}
 
 <main>
-{% block content %}{% endblock %}
+  <div class="wrap">
+  {% if session and not live_api %}
+  <p class="banner banner-warn">{{ icon("warning", 18) }}
+    No live VRChat connection on this session — the server restarted since you
+    signed in. Records still work; writing VRChat notes needs a fresh sign-in.
+  </p>
+  {% endif %}
+  {% block content %}{% endblock %}
+  </div>
 </main>
 
-{% if session %}<script src="/static/refresh.js"></script>{% endif %}
+{% if session %}
+<button id="stale-pill" class="stale-pill" type="button" hidden>
+  New activity — click to refresh
+</button>
+<script src="/static/refresh.js"></script>
+{% endif %}
 </body>
 </html>

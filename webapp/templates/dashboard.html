@@ -1,71 +1,88 @@
 {% extends "base.html" %}
-{% block title %}Overview — Mod Suite{% endblock %}
+{% block title %}Dashboard — Mod Suite{% endblock %}
 {% block content %}
-<h1>Overview</h1>
+<div>
+  <h1>Dashboard Overview</h1>
+  <p class="lead">Real-time moderation metrics and active alerts.</p>
+</div>
 
-<div class="stats">
-  <a class="stat" href="/incidents?status=new">
-    <span class="n">{{ stats.incidents_new }}</span>
-    <span class="l">open incidents</span>
+<div class="grid-3">
+  <a class="card metric is-error" href="/incidents?status=new">
+    <div class="top"><span class="chip-ic">{{ icon("warning", 22) }}</span></div>
+    <h3>Open Incidents</h3>
+    <div class="n">{{ stats.incidents_new }}<small>of {{ stats.incidents }}</small></div>
+    <span class="ghost">{{ icon("warning", 128) }}</span>
   </a>
-  <a class="stat" href="/incidents">
-    <span class="n">{{ stats.incidents }}</span>
-    <span class="l">incidents total</span>
+
+  <a class="card metric is-primary" href="/age-checks">
+    <div class="top">
+      <span class="chip-ic">{{ icon("verified", 22) }}</span>
+      <span class="pill pill-mut">{{ stats.checks_today }} today</span>
+    </div>
+    <h3>Age Checks</h3>
+    <div class="n">{{ stats.checks }}<small>total</small></div>
+    <span class="ghost">{{ icon("verified", 128) }}</span>
   </a>
-  <a class="stat" href="/age-checks?verdict=under">
-    <span class="n bad">{{ stats.checks_under }}</span>
-    <span class="l">under-range checks</span>
-  </a>
-  <a class="stat" href="/age-checks">
-    <span class="n">{{ stats.checks }}</span>
-    <span class="l">age checks total</span>
+
+  <a class="card metric is-error" href="/age-checks?verdict=under">
+    <div class="top"><span class="chip-ic">{{ icon("block", 22) }}</span></div>
+    <h3>Under Range</h3>
+    <div class="n">{{ stats.checks_under }}</div>
+    <span class="ghost">{{ icon("block", 128) }}</span>
   </a>
 </div>
 
 {% if rosters %}
-<h2>Instance</h2>
-<div class="cards">
+<div class="grid-3">
   {% for r in rosters %}
-  <div class="card roster">
-    <div class="roster-head">
-      <strong>{{ r.world_name or "(unknown world)" }}</strong>
-      <span class="dim">{{ r.client_name or r.client_id }} · {{ fmt_ago(r.updated_at) }}</span>
+  <a class="card metric is-tertiary" href="/screening">
+    <div class="top">
+      <span class="chip-ic">{{ icon("group", 22) }}</span>
+      <span class="pill pill-mut">{{ fmt_ago(r.updated_at) }}</span>
     </div>
-    <p class="dim">{{ r.players|length }} in instance{% if r.instance_id %} · #{{ short_instance(r.instance_id) }}{% endif %}</p>
-    <a href="/screening">Screen this instance →</a>
-  </div>
+    <h3>{{ r.world_name or "Unknown world" }}</h3>
+    <div class="n">{{ r.players|length }}<small>in instance</small></div>
+    <p class="dim" style="margin:6px 0 0">
+      {{ r.client_name or r.client_id }}{% if r.instance_id %} · #{{ short_instance(r.instance_id) }}{% endif %}
+    </p>
+    <span class="ghost">{{ icon("group", 128) }}</span>
+  </a>
   {% endfor %}
 </div>
 {% else %}
-<p class="dim">No desktop client has reported an instance yet. Turn on sync in
-the desktop app's Settings tab to see the live roster here.</p>
+<p class="banner banner-warn">{{ icon("warning", 18) }}
+  No desktop client has reported an instance yet. Turn on sync in the desktop
+  app's Settings tab to see the live roster here.</p>
 {% endif %}
 
 <div class="two-col">
-  <section>
-    <h2>Recent incidents</h2>
+  <section class="card">
+    <div class="card-head"><h2 style="margin:0">Recent Incidents</h2>
+      <a class="link" href="/incidents">View all</a></div>
     {% if recent_incidents %}
     <ul class="list">
-      {% for i in recent_incidents %}
+      {% for inc in recent_incidents %}
       <li>
-        <a href="/incidents/{{ i.id }}">{{ i.trigger or "(no trigger)" }}</a>
-        <span class="badge {{ i.status }}">{{ i.status }}</span>
-        <span class="dim">{{ fmt_time(i.created_at) }} · {{ i.world_name or "unknown world" }}</span>
+        <a href="/incidents/{{ inc.id }}">{{ inc.trigger or "(no trigger)" }}</a>
+        <span class="pill st-{{ inc.status }}">{{ inc.status }}</span>
+        <span class="dim" style="margin-left:auto">{{ fmt_time(inc.created_at) }}</span>
       </li>
       {% endfor %}
     </ul>
     {% else %}<p class="dim">Nothing yet.</p>{% endif %}
   </section>
 
-  <section>
-    <h2>Recent age checks</h2>
+  <section class="card">
+    <div class="card-head"><h2 style="margin:0">Recent Age Checks</h2>
+      <a class="link" href="/age-checks">View all</a></div>
     {% if recent_checks %}
     <ul class="list">
       {% for c in recent_checks %}
       <li>
         <strong>{{ c.name }}</strong>
-        <span class="badge v-{{ c.verdict }}">{{ verdict_label[c.verdict] }}</span>
-        <span class="dim">{{ fmt_time(c.created_at) }}{% if c.checked_by %} · by {{ c.checked_by }}{% endif %}</span>
+        <span class="pill v-{{ c.verdict }}">{{ verdict_label[c.verdict] }}</span>
+        <span class="dim" style="margin-left:auto">
+          {{ fmt_time(c.created_at) }}{% if c.checked_by %} · {{ c.checked_by }}{% endif %}</span>
       </li>
       {% endfor %}
     </ul>
