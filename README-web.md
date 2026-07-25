@@ -50,11 +50,35 @@ the same SQLite file in WAL mode, so they already share everything and sync is
 optional. It matters when the server lives elsewhere, or when a second
 moderator's PC files incidents into the same set.
 
+## Where the roster comes from
+
+Two sources, newest wins:
+
+1. **This machine's VRChat log**, tailed by the server itself. Works with the
+   desktop app closed — you only need VRChat running. This is the normal case.
+2. **A desktop client pushing over sync**, for a moderator on another PC.
+
+If neither is current the Screening page says so in red rather than quietly
+showing an old list. That matters: screening against a roster of people who
+already left is worse than showing nothing, and the page is where verdicts get
+recorded. Liveness for the local source is "is VRChat still writing its log",
+not the row's timestamp — a quiet instance would otherwise look dead.
+
+Set `"read_local_log": false` to disable source 1 (it is skipped automatically
+on a host with no VRChat log directory, e.g. Linux).
+
 ## Code changes and staying signed in
 
 The server watches its own source and restarts when a `.py`, `.html`, `.css`
 or `.js` file changes, so edits apply without you touching the terminal.
 Templates were always hot; Python is now too.
+
+This is a supervisor that replaces the whole process, not uvicorn's
+`--reload`. On Windows uvicorn's worker restart hangs: it logs "Reloading…",
+the replacement worker never starts, and the *old* process keeps serving — so
+edits look applied while the running code never changes. A full process
+restart costs about a second and cannot half-succeed. `/healthz` reports
+`started_at` so you can always tell whether a restart really happened.
 
 **A restart no longer signs anyone out.** The session survives, and so does the
 live VRChat connection behind it — no "no live VRChat connection" banner, no
@@ -81,7 +105,7 @@ Turn the watcher off for a hosted deployment, where it is just overhead:
 
 or run `python run_web.py --no-reload`. Note the watcher runs the app in a
 child process, so if you kill the server from a script rather than Ctrl+C,
-kill the whole process tree or the child keeps holding the port.
+the child notices the supervisor is gone and exits on its own within a couple of seconds.
 
 ## Look and feel
 

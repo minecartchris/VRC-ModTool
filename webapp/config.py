@@ -31,6 +31,11 @@ DEFAULTS = {
     # -in moderators survive the restart, so it costs nothing. Turn it off when
     # hosting, where the file watcher is pure overhead.
     "auto_reload": True,
+    # Tail this machine's VRChat log for the instance roster, so Screening
+    # works without the desktop app running. Ignored automatically when
+    # there is no VRChat log directory (e.g. a Linux host), where the roster
+    # then comes only from what desktop clients push over sync.
+    "read_local_log": True,
     # Let the web UI write VRChat user notes (the "In Range" tag). Needs the
     # signed-in moderator's live API session.
     "note_filter": "age ok",

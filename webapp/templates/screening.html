@@ -7,14 +7,29 @@
   <p class="lead">
     <strong>{{ current.world_name or "Unknown world" }}</strong>
     {%- if current.instance_id %} · instance #{{ short_instance(current.instance_id) }}{% endif %}
-    · {{ counts.all }} present · reported by
-    {{ current.client_name or current.client_id }} {{ fmt_ago(current.updated_at) }}
+    · {{ counts.all }} present
+    · {{ "read from this PC's VRChat log" if source_local
+         else "reported by " ~ (current.client_name or current.client_id) }}
+    · updated {{ fmt_ago(current.updated_at) }}
   </p>
   {% else %}
-  <p class="lead">No desktop client has reported an instance. The roster comes
-    from VRChat's local log, so a desktop client has to be running with sync on.</p>
+  <p class="lead">No instance to screen yet. Start VRChat and join a world —
+    the roster is read from VRChat's log on this machine.</p>
   {% endif %}
 </div>
+
+{% if current and not live %}
+{# Screening against a roster of people who already left is worse than showing
+   nothing, so say so loudly rather than in small grey text. #}
+<p class="banner banner-error">{{ icon("warning", 18) }}
+  <span><strong>This roster is not live.</strong>
+  VRChat doesn't appear to be running{% if not source_local %} and no desktop
+  client has pushed recently{% endif %} — these {{ counts.all }} players were
+  present {{ fmt_ago(current.updated_at) }} and may have left. Verdicts you
+  record now will be attached to
+  {{ current.world_name or "that world" }}.</span>
+</p>
+{% endif %}
 
 {% if counts.all %}
 <div class="card" style="display:flex;flex-direction:column;gap:16px">

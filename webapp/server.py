@@ -26,6 +26,7 @@ import report
 from paths import SHOTS_DIR
 from webapp import config as webconfig
 from webapp.auth import AuthError, SessionManager, staff_groups
+from webapp.roster import LOCAL_CLIENT, LocalRosterPublisher
 
 SESSION_COOKIE = "modsession"
 HERE = Path(__file__).resolve().parent
@@ -39,11 +40,20 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     cfg = cfg or webconfig.load()
     database = database or db.Database()
     sessions = SessionManager(database, cfg)
+    started_at = time.time()
 
     app = FastAPI(title="VRChat Mod Suite", docs_url=None, redoc_url=None)
     app.state.cfg = cfg
     app.state.db = database
     app.state.sessions = sessions
+
+    # Read this machine's VRChat log directly, so the roster stays current
+    # whether or not the desktop app happens to be running.
+    publisher = None
+    if cfg.get("read_local_log", True) and LocalRosterPublisher.available():
+        publisher = LocalRosterPublisher(database)
+        publisher.start()
+    app.state.roster = publisher
 
     app.mount("/static", StaticFiles(directory=str(HERE / "static")),
               name="static")
@@ -306,7 +316,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
         return page(request, "screening.html", session=sess, rows=rows,
                     current=current, rosters=rosters, show=show, q=q,
-                    counts=counts, verdicts=agecheck.VERDICTS)
+                    counts=counts, verdicts=agecheck.VERDICTS,
+                    live=_roster_live(current, publisher),
+                    source_local=bool(current
+                                      and current["client_id"] == LOCAL_CLIENT))
 
     @app.post("/screening/tag")
     def screening_tag(request: Request, user_id: str = Form(...),
@@ -412,7 +425,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     @app.get("/healthz")
     def healthz():
-        return {"ok": True, "time": time.time()}
+        # started_at changes only when the process is replaced, which is how
+        # you (and the tests) can tell a code change actually took effect
+        # rather than the old process still answering.
+        return {"ok": True, "time": time.time(), "started_at": started_at}
 
     return app
 
@@ -450,6 +466,25 @@ def _fmt_ago(ts: float | None) -> str:
         if delta >= size:
             return f"{int(delta // size)}{unit} ago"
     return "just now"
+
+
+#: A pushed roster older than this is treated as history, not a live list.
+_PUSHED_STALE_AFTER = 180.0
+
+
+def _roster_live(current: dict | None, publisher) -> bool:
+    """Whether the roster on screen still reflects who is actually present.
+
+    For a roster this server reads itself, liveness is whether VRChat is still
+    writing its log — the row's own timestamp only moves when somebody joins or
+    leaves, so a quiet instance would look dead. For one pushed by a remote
+    desktop client, the push time is all we have.
+    """
+    if not current:
+        return False
+    if current["client_id"] == LOCAL_CLIENT and publisher:
+        return publisher.is_live()
+    return (time.time() - (current["updated_at"] or 0)) < _PUSHED_STALE_AFTER
 
 
 def _screen_state(check: dict | None, tagged: bool) -> str:
