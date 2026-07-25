@@ -99,6 +99,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             # search included, instead of dumping you on a default page.
             "current_url": request.url.path + (
                 f"?{request.url.query}" if request.url.query else ""),
+            "my_role": (database.all_staff().get(sess["user_id"], {}).get("role")
+                        if sess else None),
             **ctx})
 
     def set_session_cookie(resp: Response, token: str) -> None:
@@ -286,6 +288,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         cached = database.all_users()
         latest = agecheck.latest_by_user(database.all_age_checks())
         note_word = (cfg.get("note_filter") or "").strip().lower()
+        roster_staff = database.all_staff()
         rows = []
         for p in sorted(current["players"] if current else [],
                         key=lambda p: (p.get("name") or "").lower()):
@@ -299,11 +302,16 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             # screening pass on staff. Uses the same group match as sign-in, so
             # the badge means exactly "could log into this tool".
             mod_groups = staff_groups(groups, cfg.get("staff_group", ""))
+            # The imported allowlist knows the actual rank; fall back to the
+            # group check for staff who predate it or aren't listed.
+            listed = roster_staff.get(uid)
             rows.append({
                 "name": p.get("name", ""), "user_id": uid,
                 "note": note, "tagged": tagged,
                 "groups": groups,
-                "is_mod": bool(mod_groups), "staff_groups": mod_groups,
+                "is_mod": bool(mod_groups or listed),
+                "role": (listed or {}).get("role", "MOD" if mod_groups else ""),
+                "staff_groups": mod_groups,
                 "check": check,
                 "state": _screen_state(check, tagged),
             })
@@ -443,6 +451,15 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                                payload.get("roster", {}),
                                payload.get("client_name", ""))
         return {"ok": True}
+
+    @app.post("/api/sync/staff")
+    def sync_staff(payload: dict = Body(...),
+                   x_sync_token: str | None = Header(None)):
+        """Moderator allowlist, imported from the Teen Chillout web tool."""
+        require_token(x_sync_token)
+        applied = sum(1 for rec in (payload.get("staff") or [])
+                      if database.upsert_staff(rec))
+        return {"ok": True, "applied": applied}
 
     @app.get("/api/state")
     def api_state(request: Request):

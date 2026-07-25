@@ -41,8 +41,9 @@
     <span class="name">{{ session.name }}</span>
     {# Everyone who can sign in passed the staff-group check, so the badge is
        always earned — it names which group granted it. #}
-    <span class="pill pill-mod" title="Signed in via {{ session.groups|join(', ') }}">
-      {{ icon("shield", 13) }} MOD
+    <span class="pill {{ 'pill-hr' if my_role == 'HR' else 'pill-mod' }}"
+          title="{{ 'Listed as ' ~ my_role ~ ' on the moderator allowlist. ' if my_role }}Signed in via {{ session.groups|join(', ') }}">
+      {{ icon("shield", 13) }} {{ (my_role or "MOD")|upper }}
     </span>
   </div>
 </header>

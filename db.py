@@ -115,6 +115,17 @@ CREATE TABLE IF NOT EXISTS rosters (
     seen_at     REAL        -- last heartbeat
 );
 
+-- The moderator allowlist, imported from the Teen Chillout web tool's
+-- `allowed_users` collection. Access to this tool is still decided by VRChat
+-- staff-group membership; this only records who holds which role, so the UI
+-- can tell an HR from a Mod and attribute imported history correctly.
+CREATE TABLE IF NOT EXISTS staff (
+    user_id  TEXT PRIMARY KEY,
+    name     TEXT,
+    role     TEXT,        -- Mod | HR
+    added_at REAL
+);
+
 -- Sync cursors, one row per peer ("server" on a desktop client).
 CREATE TABLE IF NOT EXISTS sync_state (
     peer         TEXT PRIMARY KEY,
@@ -474,6 +485,30 @@ class Database:
     def purge_expired_sessions(self) -> None:
         self._exec("DELETE FROM web_sessions WHERE expires_at < ?",
                    (time.time(),))
+
+    # ---------------- staff roster ----------------
+    def all_staff(self) -> dict:
+        rows = self._query("SELECT * FROM staff")
+        return {r["user_id"]: {"name": r["name"] or "",
+                               "role": r["role"] or "Mod",
+                               "added_at": r["added_at"]} for r in rows}
+
+    def upsert_staff(self, rec: dict) -> bool:
+        uid = rec.get("user_id") or ""
+        if not uid:
+            return False
+        name = rec.get("name", "") or ""
+        role = rec.get("role", "Mod") or "Mod"
+        existing = self._one("SELECT * FROM staff WHERE user_id=?", (uid,))
+        if existing and (existing["name"] or "") == name \
+                and (existing["role"] or "") == role:
+            return False
+        self._exec(
+            "INSERT INTO staff (user_id, name, role, added_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET name=excluded.name, "
+            "role=excluded.role, added_at=excluded.added_at",
+            (uid, name, role, rec.get("added_at") or time.time()))
+        return True
 
     # ---------------- change detection ----------------
     def state_version(self) -> str:

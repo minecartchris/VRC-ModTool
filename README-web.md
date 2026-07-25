@@ -354,3 +354,34 @@ in as public. That is why the server has two secrets:
 Build with `roster_token`. A leaked agent then costs you a bogus roster, not
 your moderation records. Verified: the roster token gets 200 on `/roster` and
 401 on both `/pull` and `/push`.
+
+## Importing the Teen Chillout Firestore history
+
+The web tool (`team-chillo-mod-tool`) keeps its history in Firestore:
+`kick_logs` (moderation actions) and `allowed_users` (the moderator allowlist
+with Mod/HR roles). `import_teenchillout.py` pulls both in over the sync API,
+so Firebase credentials never touch the server:
+
+```bash
+python import_teenchillout.py --service-account sa.json \
+    --server https://vrcmod.example.cc --token SYNC_TOKEN --dry-run
+```
+
+Drop `--dry-run` to apply. Mapping:
+
+| Firestore | Mod Suite |
+|---|---|
+| `kick_logs` document | an incident, `origin: teenchillout`, status `reported` |
+| `kickedUsersData[].link` | the player's `usr_` id, parsed out of the profile URL |
+| reason containing *overage* | an age check per target, verdict **over** |
+| reason containing *underage* | an age check per target, verdict **under** |
+| `Overage - 20` | `reported_age: 20` — only when the number is attached to the verdict word, so prose like "sounded 12 and said he was 19" isn't guessed at |
+| `allowed_users` | the `staff` table; HR/Mod shows on the badge |
+
+Re-running is safe: ids are derived from the Firestore document id and
+`upsert_*` only counts a write when content changes, so a second run reports
+zero rather than duplicating.
+
+Access is still decided by VRChat staff-group membership — the imported roles
+are displayed, not enforced. Gating destructive actions on HR is a deliberate
+non-change; it would need whoever runs this to actually hold that role.

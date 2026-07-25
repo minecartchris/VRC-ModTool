@@ -82,8 +82,10 @@
       <td>
         <strong>{{ r.name }}</strong>
         {% if r.is_mod %}
-        <span class="pill pill-mod" title="In the staff group — {{ r.staff_groups|join(', ') }}">
-          {{ icon("shield", 12) }} MOD</span>
+        <span class="pill {{ 'pill-hr' if r.role == 'HR' else 'pill-mod' }}"
+              title="{{ 'Listed as ' ~ r.role ~ ' on the moderator allowlist' if r.role in ('HR', 'Mod')
+                        else 'In the staff group — ' ~ r.staff_groups|join(', ') }}">
+          {{ icon("shield", 12) }} {{ (r.role or "MOD")|upper }}</span>
         {% endif %}
         {% if r.user_id %}<br><code class="uid">{{ r.user_id }}</code>{% endif %}
       </td>
