@@ -51,8 +51,15 @@
 </div>
 {% else %}
 <p class="banner banner-warn">{{ icon("warning", 18) }}
-  No instance yet. Join a world in VRChat and the roster appears here — read
-  from this machine's VRChat log, no desktop app required.</p>
+  {% if local_reader %}
+    No instance yet. Join a world in VRChat and the roster appears here — read
+    from this machine's VRChat log, no desktop app required.
+  {% else %}
+    No instance reported. This server isn't on a PC running VRChat, and
+    VRChat's API doesn't expose who is in an instance, so the roster has to
+    come from a client that is actually in it. Everything else — incidents,
+    age checks, reports — works without one.
+  {% endif %}</p>
 {% endif %}
 
 <div class="two-col">

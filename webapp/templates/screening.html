@@ -13,8 +13,16 @@
     · updated {{ fmt_ago(current.updated_at) }}
   </p>
   {% else %}
+  {% if local_reader %}
   <p class="lead">No instance to screen yet. Start VRChat and join a world —
     the roster is read from VRChat's log on this machine.</p>
+  {% else %}
+  <p class="lead">Nothing to screen. This server isn't running on a PC that is
+    in VRChat, and VRChat's API gives only a headcount for an instance, never
+    the names — so the roster must be reported by a client that is actually in
+    it. You can still record a check for any player by name or user ID on the
+    <a href="/age-checks">Age Checks</a> page.</p>
+  {% endif %}
   {% endif %}
 </div>
 

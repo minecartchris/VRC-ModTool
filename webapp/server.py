@@ -89,6 +89,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             # What the page was rendered from; the browser polls /api/state
             # and reloads when this moves. See static/refresh.js.
             "state_version": database.state_version() if sess else "",
+            # Whether this server can see VRChat itself. False on a hosted
+            # box, where the roster can only arrive from a client that is
+            # actually in the instance.
+            "local_reader": publisher is not None,
             "live_api": bool(sessions.client(
                 request.cookies.get(SESSION_COOKIE))),
             **ctx})
