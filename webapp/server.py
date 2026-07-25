@@ -9,6 +9,7 @@ Two ways in:
   * desktop clients — a shared token on /api/sync/* (no VRChat login needed)
 """
 
+import re
 import secrets
 import time
 from datetime import datetime, timezone
@@ -81,6 +82,11 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     # ---------------- plumbing ----------------
     @app.exception_handler(LoginRequired)
     async def _login_required(request: Request, _exc: LoginRequired):
+        # A fetch() caller wants JSON, not a login page rendered into its
+        # response — redirecting there makes the failure look like malformed
+        # data instead of "you are signed out".
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"error": "not signed in"}, status_code=401)
         return RedirectResponse(
             f"/login?next={quote(request.url.path)}", status_code=303)
 
@@ -294,6 +300,124 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         return RedirectResponse(_safe_next(next, "/age-checks"),
                                 status_code=303)
 
+    def file_moderation_log(*, action: str, reason: str, targets: list[dict],
+                            moderator: str, moderator_id: str = "",
+                            when: float | None = None, world_id: str = "",
+                            instance_id: str = "", origin: str = "web",
+                            age_hint: int | None = None) -> dict:
+        """One kick/warn/ban -> incident, age check, Discord. Shared by the
+        manual Kick Log page and the audit-log prompt so both produce
+        identical records."""
+        when = when or time.time()
+        incident = {
+            "id": db.new_id(), "created_at": when,
+            "trigger": f"{action} — {reason}"[:160],
+            "transcript": [f"Reason: {reason}"],
+            "world_name": "", "world_id": world_id, "instance_id": instance_id,
+            "players": targets,
+            "clip_path": "", "screenshot_path": "", "notes": "",
+            "status": "reported", "reported_by": moderator, "origin": origin,
+        }
+        database.upsert_incident(incident)
+
+        verdict = agecheck.verdict_for_reason(reason)
+        if verdict:
+            age = age_hint if age_hint else agecheck.age_in_reason(reason)
+            for t in targets:
+                agecheck.record(
+                    database, name=t.get("name", ""),
+                    user_id=t.get("user_id", ""), verdict=verdict,
+                    reported_age=age, world_id=world_id,
+                    instance_id=instance_id, checked_by=moderator,
+                    checked_by_id=moderator_id, source=origin, note=reason,
+                    incident_id=incident["id"])
+
+        discord.post(cfg, action=action, moderator=moderator, reason=reason,
+                     timestamp=datetime.fromtimestamp(
+                         when, tz=timezone.utc).isoformat(),
+                     targets=[{**t, "link": discord.profile_url(
+                         t.get("user_id", ""))} for t in targets])
+        return incident
+
+    def reason_chips(user_id: str) -> list[str]:
+        """Shared shortcuts plus this moderator's own, de-duplicated."""
+        out = list(cfg.get("common_reasons") or [])
+        for r in database.user_reasons(user_id):
+            if r not in out:
+                out.append(r)
+        return out
+
+    # ---------------- kick log (manual) ----------------
+    @app.get("/kick-log", response_class=HTMLResponse)
+    def kick_log_page(request: Request, ok: str = "", err: str = ""):
+        sess = require(request)
+        recent = [i for i in database.all_incidents()
+                  if i["origin"] in ("web", "vrchat-audit", "teenchillout")]
+        recent.sort(key=lambda i: i["created_at"] or 0, reverse=True)
+        return page(request, "kick_log.html", session=sess,
+                    reasons=reason_chips(sess["user_id"]),
+                    my_reasons=database.user_reasons(sess["user_id"]),
+                    recent=recent[:12], ok=ok, err=err)
+
+    @app.post("/kick-log")
+    def kick_log_submit(request: Request, action: str = Form("Kick"),
+                        names: list[str] = Form(default=[]),
+                        user_ids: list[str] = Form(default=[]),
+                        reasons: list[str] = Form(default=[]),
+                        detail: str = Form("")):
+        sess = require(request)
+        targets = []
+        for name, uid in zip(names, user_ids + [""] * len(names)):
+            name, uid = name.strip(), _user_id_from(uid)
+            if name or uid:
+                targets.append({"name": name or uid, "user_id": uid})
+        if not targets:
+            return RedirectResponse("/kick-log?err=no_target", status_code=303)
+
+        reason = ", ".join(r for r in reasons if r)
+        if detail.strip():
+            reason = f"{reason} - {detail.strip()}" if reason else detail.strip()
+        if not reason:
+            return RedirectResponse("/kick-log?err=no_reason", status_code=303)
+        if action not in ("Kick", "Warn", "Ban"):
+            action = "Kick"
+
+        bare = detail.strip()
+        file_moderation_log(
+            action=action, reason=reason, targets=targets,
+            moderator=sess["name"], moderator_id=sess["user_id"], origin="web",
+            age_hint=int(bare) if bare.isdigit() and 1 <= int(bare) <= 120
+            else None)
+        return RedirectResponse("/kick-log?ok=1", status_code=303)
+
+    @app.post("/kick-log/shortcut")
+    def kick_log_add_shortcut(request: Request, reason: str = Form(""),
+                              remove: str = Form("")):
+        sess = require(request)
+        if remove:
+            database.remove_user_reason(sess["user_id"], remove)
+        else:
+            database.add_user_reason(sess["user_id"], reason)
+        return RedirectResponse("/kick-log", status_code=303)
+
+    @app.get("/api/lookup-user")
+    def lookup_user(request: Request, q: str = ""):
+        """Resolve a VRChat profile link or usr_ id to a display name, using
+        the signed-in moderator's own session."""
+        require(request)
+        uid = _user_id_from(q)
+        if not uid:
+            return JSONResponse({"error": "no usr_ id in that"}, status_code=400)
+        api = sessions.client(request.cookies.get(SESSION_COOKIE))
+        if not api:
+            return JSONResponse({"error": "no live VRChat session"},
+                                status_code=409)
+        try:
+            user = api.get_user(uid)
+        except Exception as e:
+            return JSONResponse({"error": str(e)[:120]}, status_code=502)
+        return {"user_id": uid, "name": user.get("displayName", "")}
+
     # ---------------- pending kicks / warns ----------------
     @app.get("/pending", response_class=HTMLResponse)
     def pending_page(request: Request):
@@ -303,7 +427,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                   if a["actor_id"] != sess["user_id"]]
         return page(request, "pending.html", session=sess, mine=mine,
                     others=others, audit=audit.status(),
-                    reasons=cfg.get("common_reasons") or [],
+                    reasons=reason_chips(sess["user_id"]),
                     recent=database.pending_actions(include_done=True)[:15])
 
     @app.post("/pending/{action_id}/reason")
@@ -325,45 +449,18 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
         target = {"name": action["target_name"], "user_id": action["target_id"]}
         world_id, _, instance_id = (action["location"] or "").partition(":")
-        incident = {
-            "id": db.new_id(),
-            "created_at": action["created_at"] or time.time(),
-            "trigger": f"{action['action']} — {reason}"[:160],
-            "transcript": [f"Reason: {reason}"],
-            "world_name": "", "world_id": world_id, "instance_id": instance_id,
-            "players": [target],
-            "clip_path": "", "screenshot_path": "", "notes": "",
-            "status": "reported",
-            "reported_by": action["actor_name"] or sess["name"],
-            "origin": "vrchat-audit",
-        }
-        database.upsert_incident(incident)
-
-        # An age reason is also an age check, decided by the same rules the
-        # Firestore import uses so the two can't disagree.
-        verdict = agecheck.verdict_for_reason(reason)
-        if verdict:
-            # A bare number in the detail box is the age they gave; otherwise
-            # fall back to digging it out of the reason ("Overage - 20").
-            age = (int(detail.strip()) if detail.strip().isdigit()
-                   and 1 <= int(detail.strip()) <= 120
-                   else agecheck.age_in_reason(reason))
-            agecheck.record(
-                database, name=target["name"], user_id=target["user_id"],
-                verdict=verdict, reported_age=age,
-                world_id=world_id, instance_id=instance_id,
-                checked_by=action["actor_name"] or sess["name"],
-                checked_by_id=action["actor_id"], source="vrchat-audit",
-                note=reason, incident_id=incident["id"])
-
+        bare = detail.strip()
+        incident = file_moderation_log(
+            action=action["action"], reason=reason, targets=[target],
+            # Credit whoever VRChat recorded as the actor, not whoever typed
+            # the reason in - they are often different people.
+            moderator=action["actor_name"] or sess["name"],
+            moderator_id=action["actor_id"],
+            when=action["created_at"] or time.time(),
+            world_id=world_id, instance_id=instance_id, origin="vrchat-audit",
+            age_hint=int(bare) if bare.isdigit() and 1 <= int(bare) <= 120
+            else None)
         database.resolve_pending_action(action_id, reason, incident["id"])
-        discord.post(cfg, action=action["action"],
-                     moderator=action["actor_name"] or sess["name"],
-                     reason=reason,
-                     timestamp=datetime.fromtimestamp(
-                         action["created_at"] or time.time(),
-                         tz=timezone.utc).isoformat(),
-                     targets=[target])
         return RedirectResponse(back, status_code=303)
 
     @app.post("/pending/{action_id}/dismiss")
@@ -626,6 +723,15 @@ def _roster_live(current: dict | None, publisher) -> bool:
     # seen_at, not updated_at: a reporter sitting in a quiet instance where
     # nobody joins or leaves is still very much alive.
     return (time.time() - (current["seen_at"] or 0)) < _PUSHED_STALE_AFTER
+
+
+_USR_ID = re.compile(r"(usr_[0-9a-f-]{36})")
+
+
+def _user_id_from(text: str) -> str:
+    """Accept a bare usr_ id or a pasted profile link, as moderators send both."""
+    match = _USR_ID.search(text or "")
+    return match.group(1) if match else ""
 
 
 def _safe_next(value: str, fallback: str) -> str:

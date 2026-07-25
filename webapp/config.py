@@ -46,11 +46,15 @@ DEFAULTS = {
     "discord_webhook_url": "",
     # Second channel for age removals, mirroring that tool's behaviour.
     "overaged_webhook_url": "",
-    # Offered as one-click chips on the reason prompt.
+    # One-click chips on the Kick Log and the reason prompt. Same list the
+    # Teen Chillout web tool offers (KickLogForm.jsx COMMON_REASONS), so
+    # reasons stay comparable between the two tools. Moderators can add their
+    # own on top, stored per account.
     "common_reasons": [
-        "Underage", "Overage", "Refused Age Check", "Age Baiting",
-        "Harassment", "Disrespect Staff", "Racist Remarks", "Slur Usage",
-        "Sexual Comments", "Inappropriate Comments", "Advertising", "Trolling",
+        "Age Baiting", "Avatar", "Ban Evasion", "Cat Calling",
+        "Disrespect Staff", "Harassment", "Inappropriate Comments", "Overaged",
+        "Racist Remarks", "Refused Age Check", "Refusing Requests From Mod",
+        "Repeated use of slur", "Sexual Comments", "Spamming", "Underaged",
     ],
     # Tail this machine's VRChat log for the instance roster, so Screening
     # works without the desktop app running. Ignored automatically when

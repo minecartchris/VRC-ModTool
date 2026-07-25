@@ -147,6 +147,16 @@ CREATE TABLE IF NOT EXISTS pending_actions (
 );
 CREATE INDEX IF NOT EXISTS ix_pending_actor ON pending_actions(actor_id);
 
+-- Reason shortcuts a moderator added for themselves, on top of the shared
+-- defaults in web_config.json. Per-account so one person's shorthand doesn't
+-- clutter everybody else's chips.
+CREATE TABLE IF NOT EXISTS user_reasons (
+    user_id    TEXT,
+    reason     TEXT,
+    created_at REAL,
+    PRIMARY KEY (user_id, reason)
+);
+
 -- Sync cursors, one row per peer ("server" on a desktop client).
 CREATE TABLE IF NOT EXISTS sync_state (
     peer         TEXT PRIMARY KEY,
@@ -554,6 +564,26 @@ class Database:
         r = self._one("SELECT MAX(created_at) AS t FROM pending_actions "
                       "WHERE group_id=?", (group_id,))
         return (r["t"] if r and r["t"] else 0.0)
+
+    # ---------------- personal reason shortcuts ----------------
+    def user_reasons(self, user_id: str) -> list[str]:
+        rows = self._query(
+            "SELECT reason FROM user_reasons WHERE user_id=? ORDER BY reason",
+            (user_id,))
+        return [r["reason"] for r in rows]
+
+    def add_user_reason(self, user_id: str, reason: str) -> bool:
+        reason = (reason or "").strip()[:60]
+        if not reason or not user_id:
+            return False
+        self._exec("INSERT OR IGNORE INTO user_reasons "
+                   "(user_id, reason, created_at) VALUES (?,?,?)",
+                   (user_id, reason, time.time()))
+        return True
+
+    def remove_user_reason(self, user_id: str, reason: str) -> None:
+        self._exec("DELETE FROM user_reasons WHERE user_id=? AND reason=?",
+                   (user_id, reason))
 
     # ---------------- staff roster ----------------
     def all_staff(self) -> dict:

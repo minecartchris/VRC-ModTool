@@ -60,6 +60,10 @@ class AuditWatcher:
         self.last_poll = 0.0
         self.last_ok = 0.0
         self.queued = 0
+        #: Whose permissions are currently making this work, shown on /pending
+        #: so it's obvious the feature depends on them staying signed in.
+        self.provider = ""
+        self._last_good_token = ""
 
     @property
     def configured(self) -> bool:
@@ -78,27 +82,14 @@ class AuditWatcher:
     def status(self) -> dict:
         return {"configured": self.configured, "group_id": self.group_id,
                 "last_poll": self.last_poll, "last_ok": self.last_ok,
-                "error": self.last_error, "queued": self.queued}
+                "error": self.last_error, "queued": self.queued,
+                "provider": self.provider}
 
     def poll_once(self) -> int:
         """Fetch recent kicks/warns and queue any we haven't seen. Returns the
         number newly queued."""
-        api = self._borrow_session()
-        if api is None:
-            self.last_error = ("no signed-in moderator to poll with — someone "
-                               "with group-audit-view has to be logged in")
-            return 0
-        try:
-            page = api.get_group_audit_logs(
-                self.group_id, n=60,
-                event_types=",".join(EVENT_ACTIONS))
-        except Exception as e:
-            if "403" in str(e):
-                self.last_error = (
-                    "the signed-in moderator lacks the group-audit-view "
-                    "permission on this group, so VRChat refuses the audit log")
-            else:
-                self.last_error = f"audit poll failed: {e}"
+        page = self._fetch_with_any_session()
+        if page is None:
             return 0
 
         # First run: only look back a little, so turning this on doesn't
@@ -131,11 +122,49 @@ class AuditWatcher:
         self.queued += added
         return added
 
-    def _borrow_session(self):
-        """Any live VRChat client we already hold for a signed-in moderator."""
+    def _fetch_with_any_session(self) -> dict | None:
+        """Try every signed-in moderator's own VRChat session in turn.
+
+        Audit access is a per-account permission, so the tool should work as
+        long as *somebody* who holds it is logged in — typically senior staff.
+        Everyone else's 403 is skipped rather than treated as failure. The
+        account that worked is remembered and tried first next time, so the
+        steady state is one API call per poll.
+        """
         with self.sessions._lock:                     # noqa: SLF001
-            clients = list(self.sessions._clients.values())
-        return clients[0] if clients else None
+            clients = dict(self.sessions._clients)
+        if not clients:
+            self.provider = ""
+            self.last_error = ("nobody is signed in — the audit log is read "
+                               "with a moderator's own VRChat permissions, so "
+                               "someone holding group-audit-view must be "
+                               "logged in")
+            return None
+
+        ordered = sorted(clients.items(),
+                         key=lambda kv: kv[0] != self._last_good_token)
+        denied = 0
+        for token, api in ordered:
+            try:
+                page = api.get_group_audit_logs(
+                    self.group_id, n=60, event_types=",".join(EVENT_ACTIONS))
+            except Exception as e:
+                if "403" in str(e):
+                    denied += 1
+                    continue                 # this account just lacks the perm
+                self.last_error = f"audit poll failed: {e}"
+                return None
+            self._last_good_token = token
+            self.provider = getattr(api, "user", {}).get("displayName", "") \
+                if isinstance(getattr(api, "user", None), dict) else ""
+            return page
+
+        self.provider = ""
+        self.last_error = (
+            f"none of the {denied} signed-in moderator(s) hold the "
+            f"group-audit-view permission on this group, so VRChat refuses "
+            f"the audit log. Someone senior enough needs to sign in.")
+        return None
 
     def _loop(self) -> None:
         while not self._stop.is_set():

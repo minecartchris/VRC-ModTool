@@ -348,6 +348,13 @@ img.shot, video.clip {
 }
 .reason-form .row-form .grow { flex: 1; min-width: 220px; width: auto; }
 
+.target-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.target-row input { flex: 1; min-width: 180px; }
+.target-row .btn-sm { flex: none; }
+#kicklog .row-form .grow { flex: 1; min-width: 240px; width: auto; }
+/* Radios use the same chip styling as the reason checkboxes. */
+.reason-chip input[type="radio"] { margin: 0; accent-color: var(--primary); }
+
 /* ---------- live refresh ---------- */
 .live-toggle {
   display: inline-flex; align-items: center; gap: 6px;

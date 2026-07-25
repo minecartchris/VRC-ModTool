@@ -423,3 +423,30 @@ outright rather than sitting there looking healthy.
 
 Only the first hour of history is queued on first run, so switching this on
 doesn't confront somebody with every kick the group ever had.
+
+## Kick Log
+
+`/kick-log` files a kick, warn or ban by hand — the page the old tool had, for
+when nobody with audit access is around. Multiple players per log, a profile
+link resolves to a display name using your own VRChat session, and the shared
+reason chips are the same 15 the web tool offers so the two stay comparable.
+
+Submitting produces exactly what the audit prompt produces — one incident, an
+age check if the reason mentions overage/underage, and the Discord embed —
+because both call the same helper.
+
+**Personal shortcuts.** Anyone can add reason chips to their own account; they
+appear on the Kick Log and the audit prompt, and nobody else sees them. Stored
+in `user_reasons`, keyed by VRChat user id.
+
+## Audit access is per-account
+
+The audit log is read with each **moderator's own** VRChat permissions, not a
+service account. The watcher tries every signed-in moderator in turn, skips the
+ones VRChat refuses, and remembers whichever worked so the steady state is one
+call per poll. `/pending` names whose permissions are being used.
+
+So the feature switches on whenever someone holding `group-audit-view` signs in
+— usually senior staff — and everyone else benefits without needing the
+permission themselves. When nobody eligible is signed in, `/pending` says so
+and points at the Kick Log instead.

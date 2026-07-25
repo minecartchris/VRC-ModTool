@@ -17,8 +17,13 @@
   <span><strong>Audit polling isn't working.</strong> {{ audit.error }}</span></p>
 {% else %}
 <p class="dim">Watching <code>{{ audit.group_id }}</code> · last checked
-  {{ fmt_ago(audit.last_ok) }}</p>
+  {{ fmt_ago(audit.last_ok) }}{% if audit.provider %} · using
+  <strong>{{ audit.provider }}</strong>'s VRChat permissions{% endif %}</p>
 {% endif %}
+<p class="dim">The audit log is read with each moderator's <em>own</em> VRChat
+  permissions, so this works whenever someone holding
+  <code>group-audit-view</code> is signed in — you don't need it yourself.
+  Can't read it? Use the <a href="/kick-log">Kick Log</a> to file by hand.</p>
 
 {% if mine %}
 <section class="card" style="border-color: var(--primary)">
