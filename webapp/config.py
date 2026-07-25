@@ -26,6 +26,11 @@ DEFAULTS = {
     # the sync API entirely.
     "sync_token": "",
     "session_hours": 12,
+    # Restart the server when a .py file changes. On by default because this
+    # is normally run next to the desktop app while you are editing it; signed
+    # -in moderators survive the restart, so it costs nothing. Turn it off when
+    # hosting, where the file watcher is pure overhead.
+    "auto_reload": True,
     # Let the web UI write VRChat user notes (the "In Range" tag). Needs the
     # signed-in moderator's live API session.
     "note_filter": "age ok",

@@ -78,16 +78,22 @@ CREATE TABLE IF NOT EXISTS age_checks (
 CREATE INDEX IF NOT EXISTS ix_age_checks_user ON age_checks(user_id);
 CREATE INDEX IF NOT EXISTS ix_age_checks_updated ON age_checks(updated_at);
 
--- Web sessions. A session is created only after a VRChat login proves the
--- account is in the configured staff group; the VRChat auth cookie itself is
--- never stored here (it stays in the server's memory for that session).
+-- Web sessions. Created only after a VRChat login proves the account is in
+-- the configured staff group.
+--
+-- `token` holds the SHA-256 of the session token, never the token itself, and
+-- `vrc_cookie` holds that moderator's VRChat auth cookie encrypted with a key
+-- derived from the same raw token. The raw token exists only in the browser
+-- cookie, so this file on its own decrypts nothing: a stolen modtool.db yields
+-- neither a usable session nor anyone's VRChat login. See webapp/auth.py.
 CREATE TABLE IF NOT EXISTS web_sessions (
-    token      TEXT PRIMARY KEY,
+    token      TEXT PRIMARY KEY,   -- sha256(session token)
     user_id    TEXT,
     name       TEXT,
-    groups     TEXT,        -- JSON array of matched staff groups
+    groups     TEXT,               -- JSON array of matched staff groups
     created_at REAL,
-    expires_at REAL
+    expires_at REAL,
+    vrc_cookie TEXT                -- Fernet(key=KDF(session token)) blob
 );
 
 -- Last instance snapshot each desktop client pushed, so the web Screening
@@ -118,6 +124,9 @@ _ADDED_COLUMNS = {
         "deleted": "INTEGER DEFAULT 0",
         "reported_by": "TEXT",
         "origin": "TEXT",
+    },
+    "web_sessions": {
+        "vrc_cookie": "TEXT",
     },
 }
 
@@ -394,30 +403,38 @@ class Database:
             "updated_at": r["updated_at"] or 0.0} for r in rows]
 
     # ---------------- web sessions ----------------
-    def create_session(self, token: str, user_id: str, name: str,
-                       groups: list, ttl: float) -> None:
+    # All of these take the SHA-256 of the session token, never the token
+    # itself — see the schema comment and webapp/auth.py.
+    def create_session(self, token_hash: str, user_id: str, name: str,
+                       groups: list, ttl: float,
+                       vrc_cookie: str = "") -> None:
         now = time.time()
         self._exec(
             "INSERT OR REPLACE INTO web_sessions "
-            "(token, user_id, name, groups, created_at, expires_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (token, user_id, name,
-             json.dumps(groups, ensure_ascii=False), now, now + ttl))
+            "(token, user_id, name, groups, created_at, expires_at, vrc_cookie) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (token_hash, user_id, name,
+             json.dumps(groups, ensure_ascii=False), now, now + ttl,
+             vrc_cookie))
 
-    def get_session(self, token: str) -> dict | None:
-        r = self._one("SELECT * FROM web_sessions WHERE token=?", (token,))
+    def get_session(self, token_hash: str) -> dict | None:
+        r = self._one("SELECT * FROM web_sessions WHERE token=?", (token_hash,))
         if not r:
             return None
         if (r["expires_at"] or 0) < time.time():
-            self.delete_session(token)
+            self.delete_session(token_hash)
             return None
-        return {"token": r["token"], "user_id": r["user_id"] or "",
-                "name": r["name"] or "",
+        return {"user_id": r["user_id"] or "", "name": r["name"] or "",
                 "groups": json.loads(r["groups"] or "[]"),
-                "created_at": r["created_at"], "expires_at": r["expires_at"]}
+                "created_at": r["created_at"], "expires_at": r["expires_at"],
+                "vrc_cookie": r["vrc_cookie"] or ""}
 
-    def delete_session(self, token: str) -> None:
-        self._exec("DELETE FROM web_sessions WHERE token=?", (token,))
+    def set_session_cookie(self, token_hash: str, vrc_cookie: str) -> None:
+        self._exec("UPDATE web_sessions SET vrc_cookie=? WHERE token=?",
+                   (vrc_cookie, token_hash))
+
+    def delete_session(self, token_hash: str) -> None:
+        self._exec("DELETE FROM web_sessions WHERE token=?", (token_hash,))
 
     def purge_expired_sessions(self) -> None:
         self._exec("DELETE FROM web_sessions WHERE expires_at < ?",
@@ -490,6 +507,11 @@ class Database:
         # state_version() poll.
         self._exec("CREATE INDEX IF NOT EXISTS ix_incidents_updated "
                    "ON incidents(updated_at)")
+        # Sessions from before tokens were hashed stored the raw token (43
+        # chars) where a sha256 hex digest (64) now goes. They can never be
+        # looked up again, so drop them rather than leave dead rows; the effect
+        # is one forced sign-in at upgrade.
+        self._exec("DELETE FROM web_sessions WHERE length(token) <> 64")
 
     def _migrate_json(self) -> None:
         if self._count("incidents") == 0 and OLD_INCIDENTS.exists():

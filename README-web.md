@@ -50,6 +50,39 @@ the same SQLite file in WAL mode, so they already share everything and sync is
 optional. It matters when the server lives elsewhere, or when a second
 moderator's PC files incidents into the same set.
 
+## Code changes and staying signed in
+
+The server watches its own source and restarts when a `.py`, `.html`, `.css`
+or `.js` file changes, so edits apply without you touching the terminal.
+Templates were always hot; Python is now too.
+
+**A restart no longer signs anyone out.** The session survives, and so does the
+live VRChat connection behind it — no "no live VRChat connection" banner, no
+re-entering credentials and 2FA to tag one note.
+
+That works because the VRChat auth cookie is stored, encrypted, rather than
+held in memory. The scheme:
+
+| In the database | Only in your browser |
+|---|---|
+| `sha256(session token)` | the session token itself |
+| VRChat cookie encrypted with a key derived from the token | — |
+
+So `modtool.db` on its own decrypts nothing. Someone who copies the file gets
+neither a usable session nor anybody's VRChat login; they would also need the
+cookie out of a signed-in browser. This is stronger than what the desktop app
+does, which keeps its cookie in plain text in `vrc_cookies.txt`.
+
+Turn the watcher off for a hosted deployment, where it is just overhead:
+
+```json
+"auto_reload": false
+```
+
+or run `python run_web.py --no-reload`. Note the watcher runs the app in a
+child process, so if you kill the server from a script rather than Ctrl+C,
+kill the whole process tree or the child keeps holding the port.
+
 ## Look and feel
 
 The UI follows the Teen Chillout Mod console (`team-chillo-mod-tool`): the same

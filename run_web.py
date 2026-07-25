@@ -13,6 +13,8 @@ import sys
 
 import uvicorn
 
+from paths import HERE
+
 # Windows consoles still default to cp1252, which raises on any non-ASCII we
 # (or uvicorn) print. Degrade instead of crashing on startup.
 for _stream in (sys.stdout, sys.stderr):
@@ -46,8 +48,10 @@ def main() -> None:
                     help="write a starter web_config.json and exit")
     ap.add_argument("--host")
     ap.add_argument("--port", type=int)
-    ap.add_argument("--reload", action="store_true",
-                    help="auto-reload on code changes (development)")
+    ap.add_argument("--reload", dest="reload", action="store_true",
+                    default=None, help="restart on code changes")
+    ap.add_argument("--no-reload", dest="reload", action="store_false",
+                    help="don't watch for code changes")
     args = ap.parse_args()
 
     if args.init:
@@ -67,10 +71,20 @@ def main() -> None:
               "         Put this behind a TLS reverse proxy — sign-in sends "
               "VRChat credentials.", file=sys.stderr)
 
-    print(f"Mod Suite web on http://{host}:{port}")
-    if args.reload:
-        uvicorn.run("run_web:app_factory", host=host, port=port, reload=True,
-                    factory=True)
+    reload = cfg.get("auto_reload", True) if args.reload is None else args.reload
+
+    print(f"Mod Suite web on http://{host}:{port}"
+          + ("  (auto-reloading on code changes)" if reload else ""))
+    if reload:
+        # Watch the repo only. Without this uvicorn also watches the CWD tree,
+        # which here includes the multi-gigabyte Vosk models and the SQLite
+        # store — the latter changes on every write and would restart the
+        # server in a loop.
+        uvicorn.run("run_web:app_factory", host=host, port=port, factory=True,
+                    reload=True, reload_dirs=[str(HERE)],
+                    reload_includes=["*.py", "*.html", "*.css", "*.js"],
+                    reload_excludes=["*.db", "*.db-*", "*.log", ".venv/*",
+                                     "vosk-model-*/*", "incident_shots/*"])
     else:
         uvicorn.run(create_app(cfg), host=host, port=port)
 

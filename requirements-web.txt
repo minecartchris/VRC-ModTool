@@ -2,6 +2,7 @@
 # Use it when hosting the server somewhere other than your gaming PC:
 #     pip install -r requirements-web.txt && python run_web.py
 requests
+cryptography
 fastapi
 uvicorn[standard]
 jinja2

@@ -6,19 +6,30 @@ comes back as a member of the configured staff group it gets a session. That
 means the moderator list *is* the group roster — remove someone from the group
 in VRChat and they lose access here the next time they sign in.
 
-What the server keeps:
-  * in memory, for the life of the process — the VRChat auth cookie, so the
-    signed-in moderator can write user notes;
-  * in modtool.db — an opaque session token, their user id/name, and which
-    staff groups matched.
+What the server keeps, both in modtool.db:
+  * the SHA-256 of the session token, their user id/name, and which staff
+    groups matched;
+  * their VRChat auth cookie, encrypted with a key derived from the raw
+    session token.
+
+The raw token lives only in the browser cookie, so the database on its own
+decrypts nothing — someone who copies modtool.db gets neither a usable session
+nor anyone's VRChat login. Persisting it at all is what lets the server restart
+(on a code change, say) without everyone having to sign in again.
 
 What it never keeps: the password. It is used for the one upstream call and
 then dropped.
 """
 
+import base64
+import hashlib
+import json
 import secrets
 import threading
 import time
+
+import requests
+from cryptography.fernet import Fernet, InvalidToken
 
 import vrc_api
 
@@ -29,6 +40,42 @@ _WINDOW = 300.0
 
 class AuthError(RuntimeError):
     pass
+
+
+def token_hash(token: str) -> str:
+    """What goes in the database in place of the session token."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _cookie_key(token: str) -> bytes:
+    """Fernet key derived from the raw session token.
+
+    A separate digest from token_hash, so the value stored in the database is
+    not itself the encryption key. The token already carries 256 bits of
+    entropy from secrets.token_urlsafe, so one hash round is enough — this is
+    key separation, not password stretching.
+    """
+    digest = hashlib.sha256(b"modsuite-cookie-v1|" + token.encode()).digest()
+    return base64.urlsafe_b64encode(digest)
+
+
+def encrypt_cookies(token: str, jar) -> str:
+    """Freeze a requests cookie jar into an encrypted blob."""
+    try:
+        data = json.dumps(requests.utils.dict_from_cookiejar(jar))
+        return Fernet(_cookie_key(token)).encrypt(data.encode()).decode()
+    except Exception:
+        return ""
+
+
+def decrypt_cookies(token: str, blob: str) -> dict | None:
+    if not blob:
+        return None
+    try:
+        raw = Fernet(_cookie_key(token)).decrypt(blob.encode())
+        return json.loads(raw.decode())
+    except (InvalidToken, ValueError, TypeError):
+        return None
 
 
 def staff_groups(groups: list[dict], staff_group: str) -> list[str]:
@@ -146,7 +193,8 @@ class SessionManager:
         token = secrets.token_urlsafe(32)
         ttl = float(self.cfg.get("session_hours", 12)) * 3600
         self.db.purge_expired_sessions()
-        self.db.create_session(token, uid, name, matched, ttl)
+        self.db.create_session(token_hash(token), uid, name, matched, ttl,
+                               encrypt_cookies(token, api.s.cookies))
         with self._lock:
             self._clients[token] = api
         return {"token": token, "user_id": uid, "name": name,
@@ -156,16 +204,47 @@ class SessionManager:
     def get(self, token: str | None) -> dict | None:
         if not token:
             return None
-        return self.db.get_session(token)
+        return self.db.get_session(token_hash(token))
 
     def client(self, token: str | None) -> vrc_api.VRChatAPI | None:
-        """Live VRChat client for a session, if this process still holds one.
+        """Live VRChat client for a session.
 
-        Absent after a server restart: the DB session is still valid for
-        reading records, but note-writing needs a fresh sign-in.
+        Rebuilt from the stored cookie when this process doesn't have one yet,
+        which is what carries a signed-in moderator across a server restart.
+        Only the browser's raw token can decrypt it, so the rehydration has to
+        happen here on a request rather than at startup.
         """
+        if not token:
+            return None
         with self._lock:
-            return self._clients.get(token or "")
+            api = self._clients.get(token)
+        if api:
+            return api
+
+        sess = self.db.get_session(token_hash(token))
+        if not sess:
+            return None
+        cookies = decrypt_cookies(token, sess.get("vrc_cookie", ""))
+        if not cookies:
+            return None
+        try:
+            api = self._new_api()
+        except AuthError:
+            return None
+        api.s.cookies = requests.utils.cookiejar_from_dict(cookies)
+        # Trust the cookie rather than round-tripping to VRChat on a page
+        # render; a stale one surfaces as an error on the first note write.
+        api.user = {"id": sess["user_id"], "displayName": sess["name"]}
+        with self._lock:
+            self._clients[token] = api
+        return api
+
+    def refresh_stored_cookies(self, token: str) -> None:
+        """Re-save after VRChat rotates the cookie mid-session."""
+        api = self.client(token)
+        if api:
+            self.db.set_session_cookie(
+                token_hash(token), encrypt_cookies(token, api.s.cookies))
 
     def logout(self, token: str | None) -> None:
         if not token:
@@ -177,7 +256,7 @@ class SessionManager:
                 api.logout()
             except Exception:
                 pass
-        self.db.delete_session(token)
+        self.db.delete_session(token_hash(token))
 
     def _prune_pending(self) -> None:
         now = time.time()
