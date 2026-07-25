@@ -15,7 +15,7 @@ from pathlib import Path
 
 import requests
 
-from autoclip import HERE
+from paths import HERE
 
 API = "https://api.vrchat.cloud/api/1"
 APP_NAME = "VRC-ModTool"
@@ -41,18 +41,30 @@ class VRChatAPIError(RuntimeError):
 
 
 class VRChatAPI:
-    def __init__(self, cookie_path: Path = COOKIE_PATH, contact: str = ""):
+    """`cookie_path=None` keeps the auth cookie in memory only.
+
+    The desktop app passes a path so you stay logged in between runs. The web
+    server passes None: it holds one of these per signed-in moderator for the
+    life of the process, so nobody else's VRChat session is ever written to
+    disk on a shared machine.
+    """
+
+    def __init__(self, cookie_path: Path | None = COOKIE_PATH,
+                 contact: str = ""):
         self.s = requests.Session()
         self.s.headers["User-Agent"] = build_user_agent(contact)
-        jar = LWPCookieJar(str(cookie_path))
-        try:
-            jar.load(ignore_discard=True)
-        except OSError:
-            pass
-        self.s.cookies = jar
+        if cookie_path is not None:
+            jar = LWPCookieJar(str(cookie_path))
+            try:
+                jar.load(ignore_discard=True)
+            except OSError:
+                pass
+            self.s.cookies = jar
         self.user: dict | None = None
 
     def _save_cookies(self) -> None:
+        if not isinstance(self.s.cookies, LWPCookieJar):
+            return          # in-memory jar: nothing to persist
         try:
             self.s.cookies.save(ignore_discard=True)
         except OSError:
@@ -139,6 +151,26 @@ class VRChatAPI:
     def get_user_groups(self, user_id: str) -> list[dict]:
         """Groups a user belongs to (each has name, groupId, shortCode, ...)."""
         r = self.s.get(f"{API}/users/{user_id}/groups", timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def get_group_audit_logs(self, group_id: str, *, n: int = 60,
+                             event_types: str = "",
+                             start_date: str = "") -> dict:
+        """Group audit log — who moderated whom, and when.
+
+        Needs the `group-audit-view` permission on that group; without it
+        VRChat answers 403 even though the group is visible to you. Instance
+        kicks and warns appear as group.instance.kick / group.instance.warn,
+        with the target's display name only inside the description text.
+        """
+        params: dict = {"n": n}
+        if event_types:
+            params["eventTypes"] = event_types
+        if start_date:
+            params["startDate"] = start_date
+        r = self.s.get(f"{API}/groups/{group_id}/auditLogs", params=params,
+                       timeout=20)
         r.raise_for_status()
         return r.json()
 

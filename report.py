@@ -4,6 +4,17 @@ import time
 from pathlib import Path
 
 
+# How the incident came to exist. Blank means a pre-sync record, and those
+# were all listener triggers, so that stays the default.
+_SOURCES = {
+    "": "detected by local speech-to-text on voice chat audio",
+    "listener": "detected by local speech-to-text on voice chat audio",
+    "desktop": "recorded by a moderator in the desktop app",
+    "web": "recorded by a moderator in the web app",
+    "auto": "recorded automatically from staff-group membership",
+}
+
+
 def _fmt_time(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(ts))
 
@@ -18,15 +29,17 @@ def build_report(inc: dict) -> str:
         lines.append(f"World ID:  {inc['world_id']}")
     if inc.get("instance_id"):
         lines.append(f"Instance:  {inc['instance_id']}")
-    lines += [
-        "",
-        f"Trigger:   \"{inc['trigger']}\" (detected by local speech-to-text "
-        "on voice chat audio)",
-    ]
+    how = _SOURCES.get(inc.get("origin", ""), _SOURCES[""])
+    lines += ["", f"Trigger:   \"{inc['trigger']}\" ({how})"]
+    if inc.get("reported_by"):
+        lines.append(f"Filed by:  {inc['reported_by']}")
 
     if inc.get("transcript"):
+        # Only the listener's text is machine-transcribed; a manual entry is
+        # what the moderator typed, and shouldn't be disclaimed as guesswork.
         lines += ["", "Transcript around the moment (automatic, may contain "
-                      "recognition errors):"]
+                      "recognition errors):"
+                  if inc.get("origin", "") in ("", "listener") else "Details:"]
         lines += [f"  {t}" for t in inc["transcript"]]
 
     if inc.get("clip_path"):

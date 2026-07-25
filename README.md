@@ -50,9 +50,24 @@ Run `gui.bat` (or `pythonw gui.py`).
   Open screenshot, Mark reported, Delete. Stored in `modtool.db`;
   screenshots in `incident_shots\`.
 - **Settings** — in-VR notifications (XSOverlay/OVR Toolkit popup — private;
-  VRChat chatbox — public, off by default), Medal clips folder, and an
-  optional VRChat account login (used for user lookups; only the session
-  cookie is stored, in `vrc_cookies.txt`).
+  VRChat chatbox — public, off by default), Medal clips folder, an optional
+  VRChat account login (used for user lookups; only the session cookie is
+  stored, in `vrc_cookies.txt`), and optional **server sync** (see below).
+
+## Web app
+
+There is also a browser front end for incidents and age checks, with a small
+server the desktop app syncs to — useful when other moderators need the same
+list, or you want to file a check from your phone. Sign-in is by VRChat account,
+authorised by staff-group membership.
+
+```bash
+python run_web.py --init   # writes web_config.json
+python run_web.py          # http://127.0.0.1:8787
+```
+
+It uses the same `modtool.db`, so existing incidents show up with no import.
+Full setup, hosting and sync details: **[README-web.md](README-web.md)**.
 
 ## How pieces fit
 
@@ -61,14 +76,20 @@ Run `gui.bat` (or `pythonw gui.py`).
 | `autoclip.py` | audio capture → Vosk transcription → hotkey engine (also a CLI) |
 | `gui.py` | tabbed Tkinter app wiring everything together |
 | `vrc_log.py` | tails `AppData\LocalLow\VRChat\VRChat\output_log_*.txt` for world/player state |
-| `db.py` | one SQLite store (`modtool.db`) for incidents + the screening cache |
+| `paths.py` | where the store lives; dependency-free so the server can import it |
+| `db.py` | one SQLite store (`modtool.db`) for incidents, age checks, screening cache, sessions |
 | `incidents.py` | incident records (SQLite via `db.py`) + Medal clip discovery |
+| `agecheck.py` | recording an age verdict — shared by the desktop and the web UI |
 | `report.py` | incident → paste-ready report text |
 | `capture.py` | PrintWindow screenshot of VRChat at trigger time (works while occluded; never falls back to a desktop grab) |
 | `notify.py` | XSOverlay popup + OSC chatbox (UDP, fire-and-forget) |
 | `vrc_api.py` | minimal VRChat web API client (login, 2FA, user search) |
+| `sync.py` | desktop → server sync client (push/pull with tombstones) |
+| `agent.py` | roster-only agent: tails the VRChat log and reports who is in the instance to a hosted server (needs just `requests`) |
+| `run_web.py`, `webapp/` | the web front end and sync API — see [README-web.md](README-web.md) |
 
-Settings persist in `config.json`; incidents and the screening cache persist in
-`modtool.db` (a JSONL/JSON store from older versions is imported automatically
-on first run). Everything runs locally; the only network calls are the optional
-VRChat API login/lookups and the one-time Vosk model download.
+Settings persist in `config.json`; incidents, age checks and the screening cache
+persist in `modtool.db` (a JSONL/JSON store from older versions is imported
+automatically on first run). Everything runs locally by default; the only
+network calls are the optional VRChat API login/lookups, the one-time Vosk model
+download, and — if you turn it on — sync to your own server.

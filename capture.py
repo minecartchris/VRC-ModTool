@@ -15,7 +15,7 @@ screenshot.
 import ctypes
 from ctypes import wintypes
 
-from autoclip import HERE
+from paths import HERE
 
 SHOTS_DIR = HERE / "incident_shots"
 

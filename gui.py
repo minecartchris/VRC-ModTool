@@ -14,6 +14,7 @@ import ctypes
 import json
 import os
 import queue
+import socket
 import subprocess
 import threading
 import time
@@ -23,12 +24,14 @@ from pathlib import Path
 from tkinter import filedialog, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
+import agecheck
 import autoclip
 import capture
 import db
 import incidents
 import notify
 import report
+import sync
 import vrc_log
 
 try:  # crisp UI + correct coordinates on scaled displays
@@ -67,6 +70,14 @@ DEFAULT_CONFIG = {
     # VRChat requires REAL contact info in the API User-Agent (email/handle).
     # Kept here in local config so it never ends up in the public repo.
     "vrc_contact": "",
+    # Optional sync with the web server (run_web.py). Off means everything
+    # stays in the local modtool.db, exactly as before.
+    "sync_enabled": False,
+    "sync_url": "",
+    "sync_token": "",
+    "sync_interval": 60.0,
+    "sync_client_id": "",       # generated on first use, identifies this PC
+    "sync_client_name": "",     # defaults to the machine name
 }
 
 
@@ -122,6 +133,9 @@ class App:
         self._closing = False
         threading.Thread(target=self._scr_fetch_worker, daemon=True).start()
 
+        self.sync: sync.SyncClient | None = None
+        self._sync_status = "off"
+
         self._style()
 
         self.nb = ttk.Notebook(root)
@@ -147,6 +161,8 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._poll_tick = 0
         self._poll()
+        if self.cfg.get("sync_enabled"):
+            self.start_sync()
 
         if args.autostart:
             root.after(200, self.toggle)
@@ -637,12 +653,13 @@ class App:
         snap = self.watcher.snapshot()
         player = {"name": row["name"], "user_id": row["user_id"],
                   "joined_at": row.get("joined_at", time.time())}
-        inc = self.store.add(
-            trigger=f"age {kind} range ({age})",
-            transcript=[f"Manual screening: {row['name']} marked "
-                        f"{kind.upper()} range — reported age {age}."],
-            world_name=snap["world_name"], world_id=snap["world_id"],
-            instance_id=snap["instance_id"], players=[player])
+        _check, inc = agecheck.record(
+            self.db, name=row["name"], user_id=row["user_id"], verdict=kind,
+            reported_age=age, world_name=snap["world_name"],
+            world_id=snap["world_id"], instance_id=snap["instance_id"],
+            checked_by=self._moderator_name(),
+            checked_by_id=self._moderator_id(),
+            source="desktop", players=[player])
         self._reload_incidents()
         self.append_log(f"screening: incident for {row['name']} "
                         f"({kind} range, age {age})", "trigger")
@@ -650,6 +667,18 @@ class App:
                               f"{kind} range (age {age}).")
         threading.Thread(target=self._take_shot, args=(inc["id"],),
                          daemon=True).start()
+
+    def _moderator_name(self) -> str:
+        """Who is filing this — the logged-in VRChat account, else the PC."""
+        if self.vrc_api and self.vrc_api.user:
+            return (self.vrc_api.user.get("displayName")
+                    or self.vrc_api.user.get("username") or "")
+        return self.cfg.get("sync_client_name") or socket.gethostname()
+
+    def _moderator_id(self) -> str:
+        if self.vrc_api and self.vrc_api.user:
+            return self.vrc_api.user.get("id", "")
+        return ""
 
     def scr_in_range(self) -> None:
         row = self._selected_scr_row()
@@ -739,6 +768,7 @@ class App:
         return self.store.get(sel[0]) if sel else None
 
     def _reload_incidents(self) -> None:
+        self.store.reload()
         self.inc_tree.delete(*self.inc_tree.get_children())
         for inc in reversed(self.store.incidents):
             self.inc_tree.insert("", "end", iid=inc["id"], values=(
@@ -805,8 +835,37 @@ class App:
             self.inc_detail.configure(state="disabled")
 
     # ================= Settings tab =================
+    def _scrollable(self, parent: tk.Frame) -> tk.Frame:
+        """A vertically scrolling frame inside `parent`.
+
+        The Settings tab outgrew the window once sync was added; without this
+        the Save button sits below the fold on a default-sized window.
+        """
+        canvas = tk.Canvas(parent, bg=BG, highlightthickness=0, bd=0)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=BG)
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(
+            window, width=e.width))
+
+        def on_wheel(event) -> None:
+            canvas.yview_scroll(-int(event.delta / 120), "units")
+
+        # Bind the wheel only while the pointer is over this pane, so it
+        # doesn't steal scrolling from the log box or the incident tables.
+        canvas.bind("<Enter>",
+                    lambda e: canvas.bind_all("<MouseWheel>", on_wheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        return inner
+
     def _build_settings(self) -> None:
-        root = self.tab_settings
+        root = self._scrollable(self.tab_settings)
         pad = dict(padx=16, pady=4)
 
         def section(title):
@@ -912,6 +971,39 @@ class App:
                  bg=PANEL, fg=FG, insertbackground=FG, relief="flat",
                  font=FONT).grid(row=0, column=3, padx=6, ipady=3)
 
+        s_sync = section("Server sync (optional)")
+        tk.Label(s_sync, text="Push incidents and age checks to the web server "
+                              "(run_web.py) and pull back anything filed from "
+                              "a browser, so the whole mod team sees one list. "
+                              "The token is the sync_token from the server's "
+                              "web_config.json. Leave off to keep everything "
+                              "on this PC.",
+                 bg=BG, fg=DIM, font=FONT, wraplength=700,
+                 justify="left").pack(anchor="w", **pad)
+        self.sync_on_var = tk.BooleanVar(value=self.cfg.get("sync_enabled", False))
+        ttk.Checkbutton(s_sync, text="Sync with server",
+                        variable=self.sync_on_var).pack(anchor="w", **pad)
+        sync_form = tk.Frame(s_sync, bg=BG)
+        sync_form.pack(anchor="w", **pad)
+        tk.Label(sync_form, text="Server URL", bg=BG, fg=DIM, font=FONT).grid(
+            row=0, column=0, sticky="w")
+        self.sync_url_var = tk.StringVar(value=self.cfg.get("sync_url", ""))
+        tk.Entry(sync_form, textvariable=self.sync_url_var, width=34, bg=PANEL,
+                 fg=FG, insertbackground=FG, relief="flat",
+                 font=FONT).grid(row=0, column=1, padx=6, ipady=3)
+        tk.Label(sync_form, text="Token", bg=BG, fg=DIM, font=FONT).grid(
+            row=0, column=2, sticky="w", padx=(12, 0))
+        self.sync_token_var = tk.StringVar(value=self.cfg.get("sync_token", ""))
+        tk.Entry(sync_form, textvariable=self.sync_token_var, width=26,
+                 show="•", bg=PANEL, fg=FG, insertbackground=FG, relief="flat",
+                 font=FONT).grid(row=0, column=3, padx=6, ipady=3)
+        ttk.Button(sync_form, text="Sync now", style="Tool.TButton",
+                   command=self.sync_now).grid(row=0, column=4, padx=6)
+        self.sync_status_var = tk.StringVar(
+            value="Sync on." if self.cfg.get("sync_enabled") else "Sync off.")
+        tk.Label(s_sync, textvariable=self.sync_status_var, bg=BG, fg=DIM,
+                 font=FONT).pack(anchor="w", **pad)
+
         s4 = section("")
         ttk.Button(s4, text="Save settings", style="Start.TButton",
                    command=self.save_settings).pack(anchor="w", **pad)
@@ -943,12 +1035,74 @@ class App:
             note_filter=self.note_filter_var.get().strip(),
             group_filter=self.group_filter_var.get().strip(),
             vrc_contact=self.vrc_contact_var.get().strip())
+        self.cfg.update(
+            sync_enabled=self.sync_on_var.get(),
+            sync_url=self.sync_url_var.get().strip(),
+            sync_token=self.sync_token_var.get().strip())
         try:
             CONFIG_PATH.write_text(json.dumps(self.cfg, indent=2),
                                    encoding="utf-8")
             self.append_log("settings saved", "status")
         except OSError as e:
             self.append_log(f"couldn't save settings: {e}", "trigger")
+        # Apply the sync settings immediately rather than at next launch.
+        self.stop_sync()
+        if self.cfg["sync_enabled"]:
+            self.start_sync()
+        else:
+            self.sync_status_var.set("Sync off.")
+
+    # ---------- server sync ----------
+    def _save_cfg_quietly(self) -> None:
+        try:
+            CONFIG_PATH.write_text(json.dumps(self.cfg, indent=2),
+                                   encoding="utf-8")
+        except OSError:
+            pass
+
+    def _make_sync_client(self) -> "sync.SyncClient":
+        """Build the client, minting this machine's stable id on first use."""
+        if not self.cfg.get("sync_client_id"):
+            self.cfg["sync_client_id"] = sync.new_client_id()
+            self._save_cfg_quietly()
+        name = self.cfg.get("sync_client_name") or socket.gethostname()
+        return sync.SyncClient(
+            self.db, self.cfg.get("sync_url", ""),
+            self.cfg.get("sync_token", ""),
+            self.cfg["sync_client_id"], name)
+
+    def start_sync(self) -> None:
+        self.stop_sync()
+        self.sync = self._make_sync_client()
+        if not self.sync.configured:
+            self.sync_status_var.set("Set a server URL and token first.")
+            return
+        self.sync_status_var.set("Syncing…")
+        self.sync.start(
+            interval=float(self.cfg.get("sync_interval", 60) or 60),
+            roster_fn=self.watcher.snapshot,
+            on_result=lambda stats, err: self.q.put(("sync", (stats, err))))
+
+    def stop_sync(self) -> None:
+        if self.sync:
+            self.sync.stop()
+            self.sync = None
+
+    def sync_now(self) -> None:
+        """Manual one-shot sync, off the GUI thread."""
+        client = self.sync or self._make_sync_client()
+        if not client.configured:
+            self.sync_status_var.set("Set a server URL and token first.")
+            return
+        self.sync_status_var.set("Syncing…")
+
+        def work():
+            try:
+                stats = client.sync_once(self.watcher.snapshot())
+                self.q.put(("sync", (stats, "")))
+            except Exception as e:
+                self.q.put(("sync", (None, str(e))))
+        threading.Thread(target=work, daemon=True).start()
 
     # ---------- VRChat API (all network calls off the GUI thread) ----------
     def _get_api(self):
@@ -1100,6 +1254,7 @@ class App:
     def on_close(self) -> None:
         self._closing = True
         self.stop_event.set()
+        self.stop_sync()
         self.watcher.stop()
         try:
             self.db.close()
@@ -1251,6 +1406,17 @@ class App:
                 self._notes_map[uid] = payload["note"]
             self._scr_update_counts()
             how = "auto-OK'd" if payload.get("auto") else "tagged"
+            # Log the verification itself, not just the note edit, so the web
+            # age-check list shows who was cleared and when.
+            snap = self.watcher.snapshot()
+            agecheck.record(
+                self.db, name=payload["name"], user_id=uid, verdict="in_range",
+                world_name=snap["world_name"], world_id=snap["world_id"],
+                instance_id=snap["instance_id"],
+                checked_by=self._moderator_name(),
+                checked_by_id=self._moderator_id(),
+                source="auto" if payload.get("auto") else "desktop",
+                note=f"{how} VRChat note with '{payload['word']}'")
             self.append_log(f"screening: {how} {payload['name']}'s note "
                             f"with '{payload['word']}'", "status")
             self.scr_info_var.set(
@@ -1274,6 +1440,24 @@ class App:
             self.twofa_row.pack(anchor="w", padx=16, pady=4)
         elif kind == "vrc_login_err":
             self.vrc_status_var.set(payload)
+        elif kind == "sync":
+            stats, err = payload
+            if err:
+                self.sync_status_var.set(f"Sync failed: {err}")
+                # Only log a change of state, so a server that is down for an
+                # hour doesn't fill the log with one line a minute.
+                if self._sync_status != "error":
+                    self.append_log(f"sync: {err}", "trigger")
+                self._sync_status = "error"
+            else:
+                self.sync_status_var.set(
+                    f"Synced {time.strftime('%H:%M:%S')} — "
+                    f"{stats['pushed']} up, {stats['pulled']} down.")
+                if stats["pulled"]:
+                    self._reload_incidents()   # remote records just arrived
+                if self._sync_status != "ok":
+                    self.append_log("sync: connected to server", "status")
+                self._sync_status = "ok"
         elif kind == "status":
             self.status_var.set(payload)
             self.append_log(payload, "status")

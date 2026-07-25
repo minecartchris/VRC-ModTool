@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Sign in — Mod Suite{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="auth-brand">
+    <span class="mark">{{ icon("shield", 32) }}</span>
+    <h1>Teen Chillout Mod</h1>
+    <p class="sub">Mod Suite</p>
+  </div>
+
+  <div class="card">
+    <h2>{{ "Two-Factor Authentication" if ticket else "Access Control" }}</h2>
+
+    {% if error %}
+    <p class="banner banner-error">{{ icon("warning", 18) }} {{ error }}</p>
+    {% endif %}
+
+    {% if ticket %}
+      <p class="dim" style="margin-bottom:16px">
+        Enter the {{ "code from your authenticator app" if method == "totp"
+                     else "code VRChat emailed you" }}.
+      </p>
+      <form method="post" action="/login/2fa">
+        <input type="hidden" name="ticket" value="{{ ticket }}">
+        <input type="hidden" name="next" value="{{ next }}">
+        <label for="code">Two-factor code</label>
+        <div class="field">
+          {{ icon("shield") }}
+          <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code"
+                 placeholder="000000" autofocus required>
+        </div>
+        <button class="btn-primary" type="submit">Verify</button>
+      </form>
+    {% else %}
+      <p class="dim" style="margin-bottom:16px">
+        Sign in with your own VRChat account. Access is granted to members of
+        the staff group; your password is forwarded to VRChat and never stored.
+      </p>
+      <form method="post" action="/login">
+        <input type="hidden" name="next" value="{{ next }}">
+        <label for="username">Username or Email</label>
+        <div class="field">
+          {{ icon("account") }}
+          <input id="username" name="username" autocomplete="username"
+                 placeholder="Enter credentials" autofocus required>
+        </div>
+        <label for="password" style="margin-top:16px">Password</label>
+        <div class="field">
+          {{ icon("shield") }}
+          <input id="password" name="password" type="password"
+                 autocomplete="current-password" placeholder="••••••••" required>
+        </div>
+        <button class="btn-primary" type="submit">Connect to VRChat</button>
+      </form>
+      {% if not cfg.staff_group %}
+      <p class="banner banner-warn" style="margin-top:16px">{{ icon("warning", 18) }}
+        No staff group configured, so sign-in will fail. Set
+        <code>staff_group</code> in <code>web_config.json</code>.
+      </p>
+      {% endif %}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

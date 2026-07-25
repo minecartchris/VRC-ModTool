@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Pending — Mod Suite{% endblock %}
+{% block content %}
+<div>
+  <h1>Kicks &amp; Warns Awaiting a Reason</h1>
+  <p class="lead">Read from the VRChat group audit log. VRChat records that you
+    kicked someone, never why — add it here and it becomes a proper log entry
+    and a Discord post.</p>
+</div>
+
+{% if not audit.configured %}
+<p class="banner banner-warn">{{ icon("warning", 18) }}
+  No group is being watched. Set <code>audit_group</code> in
+  <code>web_config.json</code> to the group whose instances you moderate.</p>
+{% elif audit.error %}
+<p class="banner banner-error">{{ icon("warning", 18) }}
+  <span><strong>Audit polling isn't working.</strong> {{ audit.error }}</span></p>
+{% else %}
+<p class="dim">Watching <code>{{ audit.group_id }}</code> · last checked
+  {{ fmt_ago(audit.last_ok) }}{% if audit.provider %} · using
+  <strong>{{ audit.provider }}</strong>'s VRChat permissions{% endif %}</p>
+{% endif %}
+<p class="dim">The audit log is read with each moderator's <em>own</em> VRChat
+  permissions, so this works whenever someone holding
+  <code>group-audit-view</code> is signed in — you don't need it yourself.
+  Can't read it? Use the <a href="/kick-log">Kick Log</a> to file by hand.</p>
+
+{% if mine %}
+<section class="card" style="border-color: var(--primary)">
+  <h2>{{ icon("warning", 18) }} Yours — {{ mine|length }} waiting</h2>
+  {% for a in mine %}
+  <div class="pending-item">
+    <div class="pending-head">
+      <span class="pill {{ 'v-under' if a.action == 'Kick' else 'v-over' }}">{{ a.action }}</span>
+      <strong>{{ a.target_name }}</strong>
+      {% if a.target_id %}<code class="uid">{{ a.target_id }}</code>{% endif %}
+      <span class="dim" style="margin-left:auto">{{ fmt_ago(a.created_at) }}</span>
+    </div>
+    {{ reason_form(a, reasons, current_url) }}
+  </div>
+  {% endfor %}
+</section>
+{% else %}
+<p class="dim">Nothing of yours is waiting.</p>
+{% endif %}
+
+{% if others %}
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Other moderators — {{ others|length }} waiting</h2>
+  </div>
+  <p class="dim" style="margin-bottom:12px">You can fill these in too, but the
+    log keeps whoever VRChat recorded as the actor.</p>
+  {% for a in others %}
+  <div class="pending-item">
+    <div class="pending-head">
+      <span class="pill {{ 'v-under' if a.action == 'Kick' else 'v-over' }}">{{ a.action }}</span>
+      <strong>{{ a.target_name }}</strong>
+      <span class="dim">by {{ a.actor_name or a.actor_id }}</span>
+      <span class="dim" style="margin-left:auto">{{ fmt_ago(a.created_at) }}</span>
+    </div>
+    {{ reason_form(a, reasons, current_url) }}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% set done = recent | selectattr("resolved_at") | list %}
+{% if done %}
+<section class="card">
+  <h2>Recently logged</h2>
+  <ul class="list">
+    {% for a in done[:10] %}
+    <li>
+      <span class="pill st-reported">{{ a.action }}</span>
+      <strong>{{ a.target_name }}</strong>
+      <span class="dim">{{ a.reason }}</span>
+      <span class="dim" style="margin-left:auto">
+        {% if a.incident_id %}<a href="/incidents/{{ a.incident_id }}">incident →</a>{% endif %}
+        {{ fmt_ago(a.resolved_at) }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

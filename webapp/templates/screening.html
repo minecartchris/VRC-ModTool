@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Screening — Mod Suite{% endblock %}
+{% block content %}
+<div>
+  <h1>Screening</h1>
+  {% if current %}
+  <p class="lead">
+    <strong>{{ current.world_name or "Unknown world" }}</strong>
+    {%- if current.instance_id %} · instance #{{ short_instance(current.instance_id) }}{% endif %}
+    · {{ counts.all }} present
+    · {{ "read from this PC's VRChat log" if source_local
+         else "reported by " ~ (current.client_name or current.client_id) }}
+    · updated {{ fmt_ago(current.updated_at) }}
+  </p>
+  {% else %}
+  {% if local_reader %}
+  <p class="lead">No instance to screen yet. Start VRChat and join a world —
+    the roster is read from VRChat's log on this machine.</p>
+  {% else %}
+  <p class="lead">Nothing to screen. This server isn't running on a PC that is
+    in VRChat, and VRChat's API gives only a headcount for an instance, never
+    the names — so the roster must be reported by a client that is actually in
+    it. You can still record a check for any player by name or user ID on the
+    <a href="/age-checks">Age Checks</a> page.</p>
+  {% endif %}
+  {% endif %}
+</div>
+
+{% if current and not live %}
+{# Screening against a roster of people who already left is worse than showing
+   nothing, so say so loudly rather than in small grey text. #}
+<p class="banner banner-error">{{ icon("warning", 18) }}
+  <span><strong>This roster is not live.</strong>
+  VRChat doesn't appear to be running{% if not source_local %} and no desktop
+  client has pushed recently{% endif %} — these {{ counts.all }} players were
+  present {{ fmt_ago(current.updated_at) }} and may have left. Verdicts you
+  record now will be attached to
+  {{ current.world_name or "that world" }}.</span>
+</p>
+{% endif %}
+
+{% if counts.all %}
+<div class="card" style="display:flex;flex-direction:column;gap:16px">
+  <nav class="chips" aria-label="Filter roster">
+    {% for key, label in [("", "Everyone"), ("unverified", "Not verified"),
+                          ("verified", "Verified"), ("unchecked", "Unchecked"),
+                          ("under", "Under range"), ("over", "Over range")] %}
+      {% if counts[key or "all"] or show == key or not key %}
+      <a class="chip {{ 'on' if show == key }} c-{{ key or 'all' }}"
+         href="/screening{% if key %}?show={{ key }}{% endif %}">
+        {{ label }} <span class="chip-n">{{ counts[key or "all"] }}</span>
+      </a>
+      {% endif %}
+    {% endfor %}
+  </nav>
+
+  <form class="filters" method="get" action="/screening">
+    {% if show %}<input type="hidden" name="show" value="{{ show }}">{% endif %}
+    <div class="field" style="flex:1;min-width:220px">
+      {{ icon("search") }}
+      <input name="q" value="{{ q }}" placeholder="Search name or user ID…">
+    </div>
+    <button class="btn-primary" type="submit">Search</button>
+    {% if q %}<a class="link" href="/screening{% if show %}?show={{ show }}{% endif %}">clear</a>{% endif %}
+  </form>
+</div>
+{% endif %}
+
+{% if rows %}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Player</th><th>Status</th><th>VRChat note</th><th>Groups</th><th>Record</th></tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    {# Anchor so recording a verdict returns you to this row rather than the
+       top of the list. #}
+    {% set anchor = "#p" ~ (r.user_id or loop.index) %}
+    <tr id="p{{ r.user_id or loop.index }}"
+        class="{{ 'row-unverified' if r.state != 'verified' }}">
+      <td>
+        <strong>{{ r.name }}</strong>
+        {% if r.is_mod %}
+        <span class="pill {{ 'pill-hr' if r.role == 'HR' else 'pill-mod' }}"
+              title="{{ 'Listed as ' ~ r.role ~ ' on the moderator allowlist' if r.role in ('HR', 'Mod')
+                        else 'In the staff group — ' ~ r.staff_groups|join(', ') }}">
+          {{ icon("shield", 12) }} {{ (r.role or "MOD")|upper }}</span>
+        {% endif %}
+        {% if r.user_id %}<br><code class="uid">{{ r.user_id }}</code>{% endif %}
+      </td>
+      <td>
+        {% if r.check %}
+          <span class="pill v-{{ r.check.verdict }}">{{ verdict_label[r.check.verdict] }}</span>
+          <br><span class="uid">{{ fmt_ago(r.check.created_at) }}</span>
+        {% elif r.tagged %}
+          <span class="pill v-in_range">{{ icon("check", 12) }} tagged in VRChat</span>
+        {% else %}
+          <span class="pill v-unchecked">unchecked</span>
+        {% endif %}
+      </td>
+      <td class="note">{{ r.note or "—" }}</td>
+      <td class="note">{% for g in r.groups %}{{ g.name or g.id }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</td>
+      <td class="actions">
+        <form method="post" action="/age-checks" class="row-form">
+          <input type="hidden" name="next" value="{{ current_url }}{{ anchor }}">
+          <input type="hidden" name="name" value="{{ r.name }}">
+          <input type="hidden" name="user_id" value="{{ r.user_id }}">
+          {% if current %}
+          <input type="hidden" name="world_name" value="{{ current.world_name }}">
+          <input type="hidden" name="world_id" value="{{ current.world_id }}">
+          <input type="hidden" name="instance_id" value="{{ current.instance_id }}">
+          {% endif %}
+          <input name="reported_age" placeholder="age" inputmode="numeric">
+          <button class="btn-sm" name="verdict" value="over">Over</button>
+          <button class="btn-sm btn-danger" name="verdict" value="under">Under</button>
+          <button class="btn-sm btn-primary" name="verdict" value="in_range">In range</button>
+        </form>
+        {% if r.user_id and live_api %}
+        <form method="post" action="/screening/tag" class="row-form" style="margin-top:4px">
+          <input type="hidden" name="next" value="{{ current_url }}{{ anchor }}">
+          <input type="hidden" name="user_id" value="{{ r.user_id }}">
+          <input type="hidden" name="name" value="{{ r.name }}">
+          <button class="link">tag note “{{ cfg.note_filter }}”</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% elif counts.all %}
+<p class="dim">Nobody in the instance matches that filter
+  {%- if show == "unverified" %} — everyone present is verified{% endif %}.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Kick Log — Mod Suite{% endblock %}
+{% block content %}
+<div>
+  <h1>Kick Log</h1>
+  <p class="lead">File a kick, warn or ban by hand. Same shortcuts as the old
+    tool; the log lands in Incidents and goes out to Discord.</p>
+</div>
+
+{% if ok %}
+<p class="banner banner-ask">{{ icon("check", 18) }} Logged.</p>
+{% elif err == "no_target" %}
+<p class="banner banner-error">{{ icon("warning", 18) }} Add at least one player.</p>
+{% elif err == "no_reason" %}
+<p class="banner banner-error">{{ icon("warning", 18) }} Pick a reason or write one.</p>
+{% endif %}
+
+<section class="card">
+  <form method="post" action="/kick-log" id="kicklog">
+    <h2>Action</h2>
+    <div class="chips">
+      {% for a in ["Kick", "Warn", "Ban"] %}
+      <label class="chip reason-chip">
+        <input type="radio" name="action" value="{{ a }}"
+               {% if a == "Kick" %}checked{% endif %}> {{ a }}
+      </label>
+      {% endfor %}
+    </div>
+
+    <h2 style="margin-top:24px">Players</h2>
+    <div id="targets">
+      <div class="target-row">
+        <input name="names" placeholder="Display name" autocomplete="off">
+        <input name="user_ids" placeholder="Profile link or usr_… (optional)"
+               autocomplete="off">
+        <button type="button" class="btn-sm lookup" title="Fetch the display name from the link">
+          {{ icon("search", 14) }}</button>
+        <button type="button" class="btn-sm drop" title="Remove">✕</button>
+      </div>
+    </div>
+    <button type="button" id="add-target" class="btn-sm" style="margin-top:8px">
+      + Add another player</button>
+
+    <h2 style="margin-top:24px">Reason</h2>
+    <div class="chips reason-chips">
+      {% for r in reasons %}
+      <label class="chip reason-chip">
+        <input type="checkbox" name="reasons" value="{{ r }}"> {{ r }}
+      </label>
+      {% endfor %}
+    </div>
+    <div class="row-form" style="margin-top:12px">
+      <input name="detail" class="grow"
+             placeholder="Details — age they gave, what they said…">
+      <button class="btn-primary" type="submit">Submit log</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Your shortcuts</h2>
+    <span class="dim">only you see these</span>
+  </div>
+  {% if my_reasons %}
+  <div class="chips" style="margin-bottom:12px">
+    {% for r in my_reasons %}
+    <form method="post" action="/kick-log/shortcut" style="display:inline">
+      <input type="hidden" name="remove" value="{{ r }}">
+      <button class="chip" type="submit" title="Remove this shortcut">
+        {{ r }} <span class="danger-link">✕</span></button>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="dim" style="margin-bottom:12px">None yet — the shared list above is
+    what everyone gets.</p>
+  {% endif %}
+  <form method="post" action="/kick-log/shortcut" class="row-form">
+    <input name="reason" class="grow" maxlength="60"
+           placeholder="Add a reason shortcut of your own" required>
+    <button type="submit">Add shortcut</button>
+  </form>
+</section>
+
+{% if recent %}
+<section class="card">
+  <h2>Recently logged</h2>
+  <ul class="list">
+    {% for i in recent %}
+    <li>
+      <a href="/incidents/{{ i.id }}">{{ i.trigger }}</a>
+      <span class="dim" style="margin-left:auto">
+        {{ i.reported_by }} · {{ fmt_ago(i.created_at) }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<script>
+(function () {
+  var wrap = document.getElementById("targets");
+
+  document.getElementById("add-target").addEventListener("click", function () {
+    var row = wrap.firstElementChild.cloneNode(true);
+    row.querySelectorAll("input").forEach(function (i) { i.value = ""; });
+    wrap.appendChild(row);
+  });
+
+  wrap.addEventListener("click", function (e) {
+    var row = e.target.closest(".target-row");
+    if (!row) return;
+
+    if (e.target.closest(".drop")) {
+      // Keep one row so there is always somewhere to type.
+      if (wrap.children.length > 1) row.remove();
+      else row.querySelectorAll("input").forEach(function (i) { i.value = ""; });
+      return;
+    }
+
+    if (e.target.closest(".lookup")) {
+      var name = row.querySelector('[name="names"]');
+      var link = row.querySelector('[name="user_ids"]');
+      if (!link.value.trim()) return;
+      var btn = e.target.closest(".lookup");
+      btn.disabled = true;
+      fetch("/api/lookup-user?q=" + encodeURIComponent(link.value.trim()),
+            { credentials: "same-origin" })
+        .then(function (r) { return r.json().then(function (d) { return [r.ok, d]; }); })
+        .then(function (res) {
+          if (res[0] && res[1].name) name.value = res[1].name;
+          else name.placeholder = res[1].error || "lookup failed";
+        })
+        .catch(function () { name.placeholder = "lookup failed"; })
+        .then(function () { btn.disabled = false; });
+    }
+  });
+})();
+</script>
+{% endblock %}

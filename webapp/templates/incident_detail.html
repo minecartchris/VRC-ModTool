@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}{{ inc.trigger }} — Mod Suite{% endblock %}
+{% block content %}
+<div>
+  <a class="link" href="/incidents">← Incidents</a>
+  <h1 style="margin-top:6px">{{ inc.trigger or "(no trigger)" }}
+    <span class="pill st-{{ inc.status }}">{{ inc.status }}</span></h1>
+  <p class="lead">
+    {{ fmt_time(inc.created_at) }} · {{ inc.world_name or "unknown world" }}
+    {%- if inc.instance_id %} · instance #{{ short_instance(inc.instance_id) }}{% endif %}
+    {%- if inc.reported_by %} · filed by {{ inc.reported_by }}{% endif %}
+  </p>
+</div>
+
+<div class="two-col">
+  <div style="display:flex;flex-direction:column;gap:24px">
+    {% if inc.transcript %}
+    <section class="card">
+      <h2>Transcript</h2>
+      <pre class="mono">{% for t in inc.transcript %}{{ t }}
+{% endfor %}</pre>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <h2>Evidence</h2>
+      {% if has_shot %}
+        <a href="/media/shot/{{ inc.id }}" target="_blank">
+          <img class="shot" src="/media/shot/{{ inc.id }}" alt="Screenshot at trigger">
+        </a>
+      {% elif inc.screenshot_path %}
+        <p class="dim">{{ icon("image", 16) }} Screenshot at <code>{{ inc.screenshot_path }}</code>,
+           not readable from this server.</p>
+      {% else %}<p class="dim">No screenshot.</p>{% endif %}
+
+      {% if has_clip %}
+        <video class="clip" controls preload="metadata" src="/media/clip/{{ inc.id }}"></video>
+      {% elif inc.clip_path %}
+        <p class="dim">{{ icon("videocam", 16) }} Clip at <code>{{ inc.clip_path }}</code>,
+           not readable from this server.</p>
+      {% else %}<p class="dim">No clip linked.</p>{% endif %}
+    </section>
+
+    {% if checks %}
+    <section class="card">
+      <h2>Linked Age Checks</h2>
+      <ul class="list">
+        {% for c in checks %}
+        <li><strong>{{ c.name }}</strong>
+          <span class="pill v-{{ c.verdict }}">{{ verdict_label[c.verdict] }}</span>
+          {% if c.reported_age %}<span class="dim">age {{ c.reported_age }}</span>{% endif %}
+          <span class="dim" style="margin-left:auto">{{ fmt_time(c.created_at) }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:24px">
+    <section class="card">
+      <div class="card-head">
+        <h2 style="margin:0">Players Present</h2>
+        <span class="pill pill-mut">{{ inc.players|length }}</span>
+      </div>
+      {% if inc.players %}
+      <ul class="list">
+        {% for p in inc.players|sort(attribute='name') %}
+        <li><strong>{{ p.name }}</strong>
+          {% if p.user_id %}<code class="uid">{{ p.user_id }}</code>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="dim">Roster wasn't captured.</p>{% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Moderator Notes</h2>
+      <form method="post" action="/incidents/{{ inc.id }}/update">
+        <textarea name="notes" rows="6" placeholder="What happened, what you did…">{{ inc.notes }}</textarea>
+        <label style="margin-top:12px">Status
+          <select name="status">
+            {% for s in ["new", "reported", "dismissed"] %}
+            <option value="{{ s }}" {% if inc.status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button class="btn-primary" type="submit" style="margin-top:12px">Save</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2 style="margin:0">Report</h2>
+        <a class="link" href="/incidents/{{ inc.id }}/report.txt" target="_blank">
+          {{ icon("open", 16) }} Open</a>
+      </div>
+      <pre class="mono" id="report">{{ report_text }}</pre>
+      <button class="copy" data-target="report" style="margin-top:12px">
+        {{ icon("copy", 16) }} Copy report</button>
+    </section>
+
+    <form method="post" action="/incidents/{{ inc.id }}/delete"
+          onsubmit="return confirm('Delete this incident? It disappears from the desktop app too on the next sync.')">
+      <button class="btn-danger" type="submit">{{ icon("delete", 16) }} Delete incident</button>
+    </form>
+  </div>
+</div>
+
+<script>
+document.querySelectorAll("button.copy").forEach(function (b) {
+  b.addEventListener("click", function () {
+    var el = document.getElementById(b.dataset.target);
+    navigator.clipboard.writeText(el.textContent).then(function () {
+      var was = b.innerHTML;
+      b.textContent = "Copied";
+      setTimeout(function () { b.innerHTML = was; }, 1500);
+    });
+  });
+});
+</script>
+{% endblock %}

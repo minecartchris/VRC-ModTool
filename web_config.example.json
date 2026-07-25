@@ -1,0 +1,25 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+
+  "_staff_group": "Who may sign in. A VRChat group ID (grp_...), its short code, or part of its name. Empty means nobody.",
+  "staff_group": "grp_00000000-0000-0000-0000-000000000000",
+
+  "_vrc_contact": "Real email or Discord handle. VRChat's API returns 403 without it.",
+  "vrc_contact": "",
+
+  "_sync_token": "Shared secret desktop clients send on /api/sync/*. Generate with `python run_web.py --init`. Empty disables the sync API.",
+  "sync_token": "",
+
+  "session_hours": 12,
+
+  "_note_filter": "Word written into a player's VRChat note when you mark them In Range. Match the desktop app's setting.",
+  "note_filter": "age ok",
+
+  "_media_roots": "Extra folders the server may serve clips/screenshots from. incident_shots/ is always allowed. Add your Medal folder to play clips in the browser.",
+  "media_roots": [],
+  "serve_media": true,
+
+  "_https_only": "Set true when behind a TLS proxy so the session cookie is marked Secure.",
+  "https_only": false
+}
