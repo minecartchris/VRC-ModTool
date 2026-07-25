@@ -95,6 +95,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             "local_reader": publisher is not None,
             "live_api": bool(sessions.client(
                 request.cookies.get(SESSION_COOKIE))),
+            # Lets a form send you back exactly where you were, filters and
+            # search included, instead of dumping you on a default page.
+            "current_url": request.url.path + (
+                f"?{request.url.query}" if request.url.query else ""),
             **ctx})
 
     def set_session_cookie(resp: Response, token: str) -> None:
@@ -248,10 +252,14 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                          user_id: str = Form(""), verdict: str = Form(...),
                          reported_age: str = Form(""), note: str = Form(""),
                          world_name: str = Form(""), world_id: str = Form(""),
-                         instance_id: str = Form("")):
+                         instance_id: str = Form(""), next: str = Form("")):
         sess = require(request)
+        # Recording from the Screening roster must land back on Screening,
+        # with the filter and your place in the list intact — being thrown to
+        # /age-checks after every verdict makes working through a room painful.
+        back = _safe_next(next, "/age-checks")
         if verdict not in agecheck.VERDICTS:
-            return RedirectResponse("/age-checks", status_code=303)
+            return RedirectResponse(back, status_code=303)
         age = int(reported_age) if reported_age.strip().isdigit() else None
         agecheck.record(
             database, name=name.strip(), user_id=user_id.strip(),
@@ -259,13 +267,15 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             world_name=world_name, world_id=world_id, instance_id=instance_id,
             checked_by=sess["name"], checked_by_id=sess["user_id"],
             source="web")
-        return RedirectResponse("/age-checks", status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/age-checks/{check_id}/delete")
-    def age_check_delete(request: Request, check_id: str):
+    def age_check_delete(request: Request, check_id: str,
+                         next: str = Form("")):
         require(request)
         database.delete_age_check(check_id)
-        return RedirectResponse("/age-checks", status_code=303)
+        return RedirectResponse(_safe_next(next, "/age-checks"),
+                                status_code=303)
 
     # ---------------- screening ----------------
     @app.get("/screening", response_class=HTMLResponse)
@@ -330,9 +340,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     @app.post("/screening/tag")
     def screening_tag(request: Request, user_id: str = Form(...),
-                      name: str = Form("")):
+                      name: str = Form(""), next: str = Form("")):
         """Write the verification word into your VRChat note for this user."""
         sess = require(request)
+        back = _safe_next(next, "/screening")
         api = sessions.client(request.cookies.get(SESSION_COOKIE))
         word = (cfg.get("note_filter") or "").strip()
         if not api or not word:
@@ -355,7 +366,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             database, name=name, user_id=user_id, verdict="in_range",
             checked_by=sess["name"], checked_by_id=sess["user_id"],
             source="web", note=f"tagged '{word}' in VRChat note")
-        return RedirectResponse("/screening", status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     # ---------------- media ----------------
     @app.get("/media/{kind}/{inc_id}")
@@ -504,6 +515,19 @@ def _roster_live(current: dict | None, publisher) -> bool:
     # seen_at, not updated_at: a reporter sitting in a quiet instance where
     # nobody joins or leaves is still very much alive.
     return (time.time() - (current["seen_at"] or 0)) < _PUSHED_STALE_AFTER
+
+
+def _safe_next(value: str, fallback: str) -> str:
+    """Where to go after an action, taken from the form but not trusted.
+
+    Only a same-site absolute path is allowed. `//evil.example` is a
+    protocol-relative URL that browsers treat as another origin, so rejecting
+    it is what stops this becoming an open redirect.
+    """
+    value = (value or "").strip()
+    if value.startswith("/") and not value.startswith("//"):
+        return value
+    return fallback
 
 
 def _screen_state(check: dict | None, tagged: bool) -> str:

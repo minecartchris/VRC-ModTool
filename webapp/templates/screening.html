@@ -74,7 +74,11 @@
   </thead>
   <tbody>
   {% for r in rows %}
-    <tr class="{{ 'row-unverified' if r.state != 'verified' }}">
+    {# Anchor so recording a verdict returns you to this row rather than the
+       top of the list. #}
+    {% set anchor = "#p" ~ (r.user_id or loop.index) %}
+    <tr id="p{{ r.user_id or loop.index }}"
+        class="{{ 'row-unverified' if r.state != 'verified' }}">
       <td>
         <strong>{{ r.name }}</strong>
         {% if r.is_mod %}
@@ -97,6 +101,7 @@
       <td class="note">{% for g in r.groups %}{{ g.name or g.id }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</td>
       <td class="actions">
         <form method="post" action="/age-checks" class="row-form">
+          <input type="hidden" name="next" value="{{ current_url }}{{ anchor }}">
           <input type="hidden" name="name" value="{{ r.name }}">
           <input type="hidden" name="user_id" value="{{ r.user_id }}">
           {% if current %}
@@ -111,6 +116,7 @@
         </form>
         {% if r.user_id and live_api %}
         <form method="post" action="/screening/tag" class="row-form" style="margin-top:4px">
+          <input type="hidden" name="next" value="{{ current_url }}{{ anchor }}">
           <input type="hidden" name="user_id" value="{{ r.user_id }}">
           <input type="hidden" name="name" value="{{ r.name }}">
           <button class="link">tag note “{{ cfg.note_filter }}”</button>

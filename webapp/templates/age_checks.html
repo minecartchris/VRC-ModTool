@@ -9,6 +9,7 @@
 <section class="card">
   <h2>Record a check</h2>
   <form method="post" action="/age-checks" class="inline-form">
+    <input type="hidden" name="next" value="{{ current_url }}">
     <label>Player
       <input name="name" list="roster-names" required placeholder="display name">
       {% if roster %}
@@ -76,6 +77,7 @@
       <td>
         <form method="post" action="/age-checks/{{ c.id }}/delete"
               onsubmit="return confirm('Delete this age check?')">
+          <input type="hidden" name="next" value="{{ current_url }}">
           <button class="link danger-link">delete</button>
         </form>
       </td>
