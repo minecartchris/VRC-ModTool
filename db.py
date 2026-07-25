@@ -96,8 +96,14 @@ CREATE TABLE IF NOT EXISTS web_sessions (
     vrc_cookie TEXT                -- Fernet(key=KDF(session token)) blob
 );
 
--- Last instance snapshot each desktop client pushed, so the web Screening
--- page can show who is in the world right now.
+-- Last instance snapshot each reporter sent, so the web Screening page can
+-- show who is in the world right now. A reporter is either this server
+-- reading the local VRChat log, or a roster agent / desktop client elsewhere.
+--
+-- Two timestamps, and the difference matters: `updated_at` moves only when the
+-- roster's contents change and feeds state_version(), so open browsers reload
+-- on a real join or leave. `seen_at` moves on every heartbeat and is how we
+-- know the reporter is still alive without reloading anyone's page.
 CREATE TABLE IF NOT EXISTS rosters (
     client_id   TEXT PRIMARY KEY,
     client_name TEXT,
@@ -105,7 +111,8 @@ CREATE TABLE IF NOT EXISTS rosters (
     world_id    TEXT,
     instance_id TEXT,
     players     TEXT,       -- JSON array
-    updated_at  REAL
+    updated_at  REAL,       -- last content change
+    seen_at     REAL        -- last heartbeat
 );
 
 -- Sync cursors, one row per peer ("server" on a desktop client).
@@ -127,6 +134,9 @@ _ADDED_COLUMNS = {
     },
     "web_sessions": {
         "vrc_cookie": "TEXT",
+    },
+    "rosters": {
+        "seen_at": "REAL",
     },
 }
 
@@ -377,30 +387,55 @@ class Database:
 
     # ---------------- rosters ----------------
     def upsert_roster(self, client_id: str, snap: dict,
-                      client_name: str = "") -> None:
+                      client_name: str = "") -> bool:
+        """Record a heartbeat from a reporter. True if the roster changed.
+
+        Reporters heartbeat every ~30s to prove they are alive, so bumping
+        `updated_at` unconditionally would change state_version() on every
+        heartbeat and reload every open browser twice a minute for nothing.
+        Only a genuine join/leave (or world change) does that.
+        """
+        now = time.time()
+        players = json.dumps(snap.get("players", []), ensure_ascii=False)
+        world_name = snap.get("world_name", "") or ""
+        world_id = snap.get("world_id", "") or ""
+        instance_id = snap.get("instance_id", "") or ""
+
+        existing = self._one("SELECT * FROM rosters WHERE client_id=?",
+                             (client_id,))
+        changed = (existing is None
+                   or (existing["players"] or "[]") != players
+                   or (existing["world_name"] or "") != world_name
+                   or (existing["world_id"] or "") != world_id
+                   or (existing["instance_id"] or "") != instance_id)
         self._exec(
             """INSERT INTO rosters
                (client_id, client_name, world_name, world_id, instance_id,
-                players, updated_at)
-               VALUES (?,?,?,?,?,?,?)
+                players, updated_at, seen_at)
+               VALUES (?,?,?,?,?,?,?,?)
                ON CONFLICT(client_id) DO UPDATE SET
                  client_name=excluded.client_name,
                  world_name=excluded.world_name, world_id=excluded.world_id,
                  instance_id=excluded.instance_id, players=excluded.players,
-                 updated_at=excluded.updated_at""",
-            (client_id, client_name, snap.get("world_name", ""),
-             snap.get("world_id", ""), snap.get("instance_id", ""),
-             json.dumps(snap.get("players", []), ensure_ascii=False),
-             time.time()))
+                 updated_at=CASE WHEN ? THEN excluded.updated_at
+                                 ELSE rosters.updated_at END,
+                 seen_at=excluded.seen_at""",
+            (client_id, client_name, world_name, world_id, instance_id,
+             players, now, now, 1 if changed else 0))
+        return changed
 
     def all_rosters(self) -> list[dict]:
-        rows = self._query("SELECT * FROM rosters ORDER BY updated_at DESC")
+        # Most recently heard from first: a reporter still heartbeating beats
+        # one whose last contact is older, even if the stale one changed later.
+        rows = self._query("SELECT * FROM rosters "
+                           "ORDER BY COALESCE(seen_at, updated_at) DESC")
         return [{
             "client_id": r["client_id"], "client_name": r["client_name"] or "",
             "world_name": r["world_name"] or "", "world_id": r["world_id"] or "",
             "instance_id": r["instance_id"] or "",
             "players": json.loads(r["players"] or "[]"),
-            "updated_at": r["updated_at"] or 0.0} for r in rows]
+            "updated_at": r["updated_at"] or 0.0,
+            "seen_at": r["seen_at"] or r["updated_at"] or 0.0} for r in rows]
 
     # ---------------- web sessions ----------------
     # All of these take the SHA-256 of the session token, never the token

@@ -1,0 +1,157 @@
+"""Roster agent — reports who is in your VRChat instance to the mod server.
+
+VRChat's API will tell you an instance holds 48 people but never who they are;
+the names exist only in the output log of a client that is actually in the
+instance. So when the server is hosted somewhere else, someone in the world has
+to report the roster, and this is the smallest thing that can do it.
+
+It is not the desktop app: no Vosk model, no audio capture, no Tkinter, no
+clipping. It tails the VRChat log and POSTs the roster. One moderator running
+this gives every browser a live Screening page.
+
+    python agent.py --server https://mods.example.com --token YOUR_SYNC_TOKEN
+
+The token is `sync_token` from the server's web_config.json. Settings are
+remembered in agent_config.json, so after the first run:
+
+    python agent.py
+
+Needs only `requests` (pip install requests) plus Python 3.10+.
+"""
+
+import argparse
+import json
+import socket
+import sys
+import time
+import uuid
+from pathlib import Path
+
+import requests
+
+import vrc_log
+
+CONFIG_PATH = Path(__file__).resolve().parent / "agent_config.json"
+DESKTOP_CONFIG = Path(__file__).resolve().parent / "config.json"
+
+#: Prove we're alive this often even when nobody joins or leaves. Must stay
+#: well under the server's 180s staleness cutoff.
+HEARTBEAT = 30.0
+#: How often to look for a change worth reporting immediately.
+POLL = 3.0
+
+
+def load_settings(args) -> dict:
+    """CLI beats agent_config.json, which beats the desktop app's config."""
+    cfg = {"server": "", "token": "", "name": "", "client_id": ""}
+    for path, keys in ((DESKTOP_CONFIG, ("sync_url", "sync_token",
+                                         "sync_client_name", "sync_client_id")),
+                       (CONFIG_PATH, ("server", "token", "name", "client_id"))):
+        if not path.exists():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for field, key in zip(("server", "token", "name", "client_id"), keys):
+            if raw.get(key):
+                cfg[field] = raw[key]
+
+    for field in ("server", "token", "name"):
+        if getattr(args, field, None):
+            cfg[field] = getattr(args, field)
+    cfg["server"] = cfg["server"].rstrip("/")
+    if not cfg["name"]:
+        cfg["name"] = socket.gethostname()
+    if not cfg["client_id"]:
+        cfg["client_id"] = uuid.uuid4().hex[:12]
+    return cfg
+
+
+def save_settings(cfg: dict) -> None:
+    try:
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except OSError as e:
+        print(f"  (couldn't save {CONFIG_PATH.name}: {e})")
+
+
+def post_roster(session: requests.Session, cfg: dict, snap: dict) -> None:
+    r = session.post(
+        f"{cfg['server']}/api/sync/roster",
+        json={"client_id": cfg["client_id"], "client_name": cfg["name"],
+              "roster": {"world_name": snap["world_name"],
+                         "world_id": snap["world_id"],
+                         "instance_id": snap["instance_id"],
+                         "players": snap["players"]}},
+        headers={"X-Sync-Token": cfg["token"]}, timeout=20)
+    if r.status_code == 401:
+        raise SystemExit("Server rejected the token. Check `sync_token` in the "
+                         "server's web_config.json.")
+    if r.status_code == 503:
+        raise SystemExit("Server has the sync API disabled (no sync_token set).")
+    r.raise_for_status()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Report your VRChat instance "
+                                             "roster to the mod server.")
+    ap.add_argument("--server", help="e.g. https://mods.example.com")
+    ap.add_argument("--token", help="sync_token from the server config")
+    ap.add_argument("--name", help="how this PC appears in the web UI")
+    ap.add_argument("--once", action="store_true",
+                    help="send one roster and exit")
+    args = ap.parse_args()
+
+    cfg = load_settings(args)
+    if not cfg["server"] or not cfg["token"]:
+        ap.error("need --server and --token the first time (they are then "
+                 f"remembered in {CONFIG_PATH.name})")
+    save_settings(cfg)
+
+    if not vrc_log.LOG_DIR.exists():
+        raise SystemExit(f"No VRChat log directory at {vrc_log.LOG_DIR}.\n"
+                         "Run this on the PC that plays VRChat.")
+
+    print(f"Roster agent -> {cfg['server']}  (as {cfg['name']})")
+    print("Reading VRChat's log. Leave this running while you're in the "
+          "instance; Ctrl+C to stop.")
+
+    watcher = vrc_log.VRCLogWatcher()
+    watcher.start()
+
+    session = requests.Session()
+    last_revision = -1
+    last_sent = 0.0
+    complained = False
+
+    try:
+        while True:
+            snap = watcher.snapshot()
+            due = (snap["revision"] != last_revision
+                   or time.time() - last_sent >= HEARTBEAT)
+            # Never report an empty snapshot as if it were an instance; it
+            # would overwrite a real roster from another reporter.
+            if due and (snap["players"] or snap["world_id"]):
+                try:
+                    post_roster(session, cfg, snap)
+                    if snap["revision"] != last_revision or complained:
+                        print(f"  [{time.strftime('%H:%M:%S')}] "
+                              f"{snap['world_name'] or 'unknown world'} — "
+                              f"{len(snap['players'])} players")
+                    last_revision, last_sent, complained = (
+                        snap["revision"], time.time(), False)
+                except requests.RequestException as e:
+                    if not complained:      # don't spam while it's down
+                        print(f"  can't reach the server ({e}); retrying")
+                        complained = True
+            if args.once:
+                return
+            time.sleep(POLL)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        watcher.stop()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

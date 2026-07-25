@@ -24,6 +24,10 @@ LOCAL_CLIENT = "local-server"
 #: ended — the roster is then history, not a live list.
 LIVE_WINDOW = 300.0
 
+#: Re-assert liveness this often even when nobody joins or leaves. Matches the
+#: roster agent (agent.py) so both reporters rank comparably.
+HEARTBEAT = 30.0
+
 
 class LocalRosterPublisher:
     def __init__(self, database, interval: float = 3.0):
@@ -63,15 +67,21 @@ class LocalRosterPublisher:
         return age is not None and age < LIVE_WINDOW
 
     def _loop(self) -> None:
+        last_write = 0.0
         while not self._stop.is_set():
             try:
                 snap = self.watcher.snapshot()
                 # Publish only a real instance. An empty snapshot (no log yet,
                 # or VRChat never started) must not overwrite a roster a remote
-                # desktop client legitimately pushed.
-                if (snap["revision"] != self._last_revision
-                        and (snap["players"] or snap["world_id"])):
+                # reporter legitimately pushed.
+                due = (snap["revision"] != self._last_revision
+                       or time.time() - last_write >= HEARTBEAT)
+                if due and (snap["players"] or snap["world_id"]):
                     self._last_revision = snap["revision"]
+                    last_write = time.time()
+                    # Heartbeats keep this reporter ranked ahead of a remote
+                    # agent that has gone quiet. upsert_roster only bumps
+                    # updated_at on a real change, so they cost no page reloads.
                     self.db.upsert_roster(LOCAL_CLIENT, snap, self.client_name)
             except Exception:
                 pass          # never let a bad read kill the publisher

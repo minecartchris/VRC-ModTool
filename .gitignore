@@ -39,3 +39,6 @@ vosk-model-*/
 # ---- OS cruft ----
 Thumbs.db
 .DS_Store
+
+# ---- Roster agent settings (generated on first run) ----
+agent_config.json

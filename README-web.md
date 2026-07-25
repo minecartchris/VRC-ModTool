@@ -52,20 +52,56 @@ moderator's PC files incidents into the same set.
 
 ## Where the roster comes from
 
-Two sources, newest wins:
+**VRChat's API cannot tell you who is in an instance.** It gives a headcount
+and nothing else — verified against a live 48-player group instance:
 
-1. **This machine's VRChat log**, tailed by the server itself. Works with the
-   desktop app closed — you only need VRChat running. This is the normal case.
-2. **A desktop client pushing over sync**, for a moderator on another PC.
+| Endpoint | What comes back |
+|---|---|
+| `/instances/{world}:{instance}` | `n_users: 48`, no `users` field |
+| `/groups/{gid}/instances` | `memberCount` only |
+| `/worlds/{wid}/{iid}` | `n_users: 48`, no list |
+| `/auth/user/friends` | locations, but only for friends — 4 of the 48 |
 
-If neither is current the Screening page says so in red rather than quietly
-showing an old list. That matters: screening against a roster of people who
-already left is worse than showing nothing, and the page is where verdicts get
-recorded. Liveness for the local source is "is VRChat still writing its log",
-not the row's timestamp — a quiet instance would otherwise look dead.
+The names exist only in the output log of a client that is *in* the instance.
+So the roster always comes from something running on a PC that is in the world:
 
-Set `"read_local_log": false` to disable source 1 (it is skipped automatically
-on a host with no VRChat log directory, e.g. Linux).
+1. **This server**, if it runs on that PC — it tails the log itself. Nothing
+   else to install, desktop app not required.
+2. **The roster agent** (`agent.py`), for the normal hosted case. See below.
+3. **The desktop app**, which pushes its roster when sync is on.
+
+Whichever reported most recently wins. Reporters heartbeat every 30s; a
+heartbeat updates liveness but deliberately does *not* count as a change, so
+open browsers don't reload twice a minute for nothing.
+
+If no reporter is current the Screening page says so in red rather than quietly
+showing an old list — screening against people who already left is worse than
+showing nothing, and that page is where verdicts get recorded.
+
+Everything else — incidents, age checks, reports, search — works with no
+reporter at all, from any browser.
+
+## The roster agent
+
+For a hosted server, one moderator who is in the instance runs this:
+
+```bash
+python agent.py --server https://mods.example.com --token YOUR_SYNC_TOKEN
+```
+
+(or `agent.bat --server ... --token ...` on Windows, then just double-click it
+afterwards — settings are remembered in `agent_config.json`).
+
+It tails the VRChat log and POSTs the roster. That is all it does: **no Vosk
+model, no audio capture, no Tkinter, no clipping** — its only dependency is
+`requests`. One person running it gives every browser a live Screening page,
+including moderators on phones who have nothing installed.
+
+The token is `sync_token` from the server's `web_config.json`.
+
+Set `"read_local_log": false` to stop the server reading its own log (it is
+skipped automatically where there is no VRChat log directory, e.g. a Linux
+host, so a hosted deployment needs no configuration).
 
 ## Code changes and staying signed in
 

@@ -85,6 +85,7 @@ Full setup, hosting and sync details: **[README-web.md](README-web.md)**.
 | `notify.py` | XSOverlay popup + OSC chatbox (UDP, fire-and-forget) |
 | `vrc_api.py` | minimal VRChat web API client (login, 2FA, user search) |
 | `sync.py` | desktop → server sync client (push/pull with tombstones) |
+| `agent.py` | roster-only agent: tails the VRChat log and reports who is in the instance to a hosted server (needs just `requests`) |
 | `run_web.py`, `webapp/` | the web front end and sync API — see [README-web.md](README-web.md) |
 
 Settings persist in `config.json`; incidents, age checks and the screening cache

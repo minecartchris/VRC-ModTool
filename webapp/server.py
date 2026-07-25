@@ -488,7 +488,9 @@ def _roster_live(current: dict | None, publisher) -> bool:
         return False
     if current["client_id"] == LOCAL_CLIENT and publisher:
         return publisher.is_live()
-    return (time.time() - (current["updated_at"] or 0)) < _PUSHED_STALE_AFTER
+    # seen_at, not updated_at: a reporter sitting in a quiet instance where
+    # nobody joins or leaves is still very much alive.
+    return (time.time() - (current["seen_at"] or 0)) < _PUSHED_STALE_AFTER
 
 
 def _screen_state(check: dict | None, tagged: bool) -> str:
