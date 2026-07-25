@@ -20,6 +20,11 @@ web_config.json
 *.db
 *.db-wal
 *.db-shm
+# Database backups. Named separately because "modtool.db.bak-preweb" does not
+# match *.db, and these hold the same private notes the live store does.
+*.bak
+*.bak-*
+*.db.*
 incidents.jsonl
 incidents.tmp
 incident_shots/
