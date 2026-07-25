@@ -280,13 +280,17 @@ web writes statuses, notes and age checks.
 - Age-check records are notes about real people, including minors. Keep the
   server private and the database off shared drives.
 
-## Deployed instance (Proxmox)
+## Deploying on Proxmox
 
-Running as LXC **101 `modsuite`** on the Proxmox node `Jesus` (192.168.1.3):
+This runs happily as an unprivileged LXC container. Substitute your own
+addresses for `$PVE_HOST` (the Proxmox node) and `$CT_IP` (the container) —
+the real ones are deliberately not in this public repo.
+
+Running as LXC **101 `modsuite`**:
 
 | | |
 |---|---|
-| Address | `http://192.168.1.50:8787` (static, gw 192.168.1.1) |
+| Address | `http://$CT_IP:8787` (static) |
 | Resources | 2 cores, 512 MB RAM, 4 GB rootfs on `local-lvm` |
 | Service | `systemctl {status,restart} modsuite` — enabled, `onboot=1` |
 | Code | `/opt/modsuite/app` (venv at `/opt/modsuite/venv`) |
@@ -294,18 +298,19 @@ Running as LXC **101 `modsuite`** on the Proxmox node `Jesus` (192.168.1.3):
 | Config | `/etc/modsuite/web_config.json` |
 | Logs | `journalctl -u modsuite -f` |
 
-Chosen as a container rather than a VM because the thin pool was at 73% with
-~5.9 GB free; overcommitting it would have risked the *other* guests, and a
-Python web app gains nothing from full virtualisation.
+A container rather than a VM: check `lvs` first, because a thin pool that is
+already most of the way full will not survive an overcommitted VM disk, and
+that takes the *other* guests down with it. A Python web app gains nothing
+from full virtualisation anyway.
 
 `https_only` is on, which marks the session cookie Secure — correct behind the
-tunnel, but it means **signing in over plain `http://192.168.1.50:8787` will
+tunnel, but it means **signing in over plain `http://$CT_IP:8787` will
 not work**; the cookie is refused. Set it to `false` temporarily if you need to
 test on the LAN before the tunnel is up.
 
 ### Cloudflare tunnel
 
-Point the tunnel's origin at `http://192.168.1.50:8787` (or `127.0.0.1:8787`
+Point the tunnel's origin at `http://$CT_IP:8787` (or `127.0.0.1:8787`
 if you run `cloudflared` inside this container). Nothing needs to be
 port-forwarded — the tunnel dials out.
 
@@ -313,8 +318,8 @@ port-forwarded — the tunnel dials out.
 
 ```bash
 git archive --format=tar.gz -o /tmp/modsuite.tar.gz web
-scp /tmp/modsuite.tar.gz root@192.168.1.3:/tmp/
-ssh root@192.168.1.3 'pct push 101 /tmp/modsuite.tar.gz /tmp/a.tar.gz &&
+scp /tmp/modsuite.tar.gz root@$PVE_HOST:/tmp/
+ssh root@$PVE_HOST 'pct push 101 /tmp/modsuite.tar.gz /tmp/a.tar.gz &&
   pct exec 101 -- bash -c "tar -xzf /tmp/a.tar.gz -C /opt/modsuite/app &&
   chown -R modsuite:modsuite /opt/modsuite && systemctl restart modsuite"'
 ```
