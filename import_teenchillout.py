@@ -38,27 +38,9 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-#: Reasons that are really an age verdict. Checked as substrings against the
-#: whole reason string, which is a comma-joined multi-select plus free text
-#: ("Age Baiting, Refused Age Check - sounded 12 and said he was 19").
-#: "underage" is checked first only for readability; the two never overlap.
-AGE_VERDICTS = (("underage", "under"), ("overage", "over"))
+import agecheck
 
 _USR = re.compile(r"(usr_[0-9a-f-]{36})")
-
-#: Moderators often write the age straight into the reason ("Overage - 20").
-#: Deliberately narrow: only a number attached to the verdict word counts, so
-#: free text like "sounded 12 and said he was 19" is left alone rather than
-#: guessed at.
-_AGE = re.compile(r"(?:over|under)age[d]?\s*[-:]?\s*(\d{1,3})\b", re.I)
-
-
-def reported_age(reason: str) -> int | None:
-    match = _AGE.search(reason or "")
-    if not match:
-        return None
-    age = int(match.group(1))
-    return age if 1 <= age <= 120 else None
 
 
 def stable_id(prefix: str, *parts: str) -> str:
@@ -130,10 +112,9 @@ def convert(doc_id: str, doc: dict) -> tuple[dict, list[dict]]:
     }
 
     checks = []
-    low = reason.lower()
-    verdict = next((v for key, v in AGE_VERDICTS if key in low), None)
+    verdict = agecheck.verdict_for_reason(reason)
     if verdict:
-        age = reported_age(reason)
+        age = agecheck.age_in_reason(reason)
         for person in people:
             checks.append({
                 "id": stable_id("ta", doc_id, person["user_id"] or person["name"]),

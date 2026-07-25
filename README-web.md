@@ -385,3 +385,41 @@ zero rather than duplicating.
 Access is still decided by VRChat staff-group membership — the imported roles
 are displayed, not enforced. Gating destructive actions on HR is a deliberate
 non-change; it would need whoever runs this to actually hold that role.
+
+## Asking why: audit-log kicks and warns
+
+VRChat records *that* a moderator kicked someone, never *why*. The server polls
+the group audit log and queues each action so its moderator is asked for a
+reason while they still remember it.
+
+```json
+"audit_group": "grp_…",          // the group whose instances you moderate
+"audit_poll_seconds": 60,
+"discord_webhook_url": "…",      // where the finished log is announced
+"overaged_webhook_url": "…"      // second channel for age removals
+```
+
+| Audit event | Becomes |
+|---|---|
+| `group.instance.kick` | a **Kick** awaiting a reason |
+| `group.instance.warn` | a **Warn** awaiting a reason |
+
+The moderator sees a prompt on whatever page they're on — *"Why did you kick
+X?"* — plus a count in the nav. Answering picks reasons from chips (the same
+taxonomy as the web tool) with a detail box, and produces:
+
+- an incident, credited to whoever VRChat recorded as the actor, not whoever
+  filled the form in;
+- an age check when the reason mentions overage/underage, using the *same*
+  rules as the Firestore import so the two can't disagree — a bare number in
+  the detail box is read as the age;
+- a Discord embed byte-compatible with the web tool's, so both can post to one
+  channel.
+
+Polling borrows a signed-in moderator's live VRChat session, so there is no
+extra account or stored credential. It needs the **`group-audit-view`**
+permission on that group. Without it VRChat answers 403 and `/pending` says so
+outright rather than sitting there looking healthy.
+
+Only the first hour of history is queued on first run, so switching this on
+doesn't confront somebody with every kick the group ever had.

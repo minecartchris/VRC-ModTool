@@ -126,6 +126,27 @@ CREATE TABLE IF NOT EXISTS staff (
     added_at REAL
 );
 
+-- Kicks and warns seen in the VRChat group audit log that still need a reason
+-- from the moderator who issued them. The primary key is VRChat's own audit id
+-- (gaud_...), so re-polling the same window can't queue an action twice.
+CREATE TABLE IF NOT EXISTS pending_actions (
+    id          TEXT PRIMARY KEY,   -- gaud_... from the audit log
+    group_id    TEXT,
+    action      TEXT,               -- Kick | Warn
+    actor_id    TEXT,               -- the moderator who did it
+    actor_name  TEXT,
+    target_id   TEXT,
+    target_name TEXT,
+    location    TEXT,               -- world:instance it happened in
+    created_at  REAL,               -- when VRChat recorded it
+    noticed_at  REAL,
+    reason      TEXT,
+    resolved_at REAL,
+    incident_id TEXT,
+    dismissed   INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_pending_actor ON pending_actions(actor_id);
+
 -- Sync cursors, one row per peer ("server" on a desktop client).
 CREATE TABLE IF NOT EXISTS sync_state (
     peer         TEXT PRIMARY KEY,
@@ -485,6 +506,54 @@ class Database:
     def purge_expired_sessions(self) -> None:
         self._exec("DELETE FROM web_sessions WHERE expires_at < ?",
                    (time.time(),))
+
+    # ---------------- pending moderator actions ----------------
+    def add_pending_action(self, rec: dict) -> bool:
+        """Queue an audit-log action. False if we already had it."""
+        if self._one("SELECT 1 FROM pending_actions WHERE id=?", (rec["id"],)):
+            return False
+        self._exec(
+            """INSERT INTO pending_actions
+               (id, group_id, action, actor_id, actor_name, target_id,
+                target_name, location, created_at, noticed_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (rec["id"], rec.get("group_id", ""), rec.get("action", "Kick"),
+             rec.get("actor_id", ""), rec.get("actor_name", ""),
+             rec.get("target_id", ""), rec.get("target_name", ""),
+             rec.get("location", ""), rec.get("created_at") or time.time(),
+             time.time()))
+        return True
+
+    def pending_actions(self, actor_id: str = "", include_done: bool = False
+                        ) -> list[dict]:
+        sql = "SELECT * FROM pending_actions WHERE 1=1"
+        params: list = []
+        if not include_done:
+            sql += " AND resolved_at IS NULL AND COALESCE(dismissed, 0) = 0"
+        if actor_id:
+            sql += " AND actor_id = ?"
+            params.append(actor_id)
+        sql += " ORDER BY created_at DESC"
+        return [dict(r) for r in self._query(sql, tuple(params))]
+
+    def get_pending_action(self, action_id: str) -> dict | None:
+        r = self._one("SELECT * FROM pending_actions WHERE id=?", (action_id,))
+        return dict(r) if r else None
+
+    def resolve_pending_action(self, action_id: str, reason: str,
+                               incident_id: str) -> None:
+        self._exec(
+            "UPDATE pending_actions SET reason=?, incident_id=?, resolved_at=? "
+            "WHERE id=?", (reason, incident_id, time.time(), action_id))
+
+    def dismiss_pending_action(self, action_id: str) -> None:
+        self._exec("UPDATE pending_actions SET dismissed=1 WHERE id=?",
+                   (action_id,))
+
+    def newest_audit_seen(self, group_id: str) -> float:
+        r = self._one("SELECT MAX(created_at) AS t FROM pending_actions "
+                      "WHERE group_id=?", (group_id,))
+        return (r["t"] if r and r["t"] else 0.0)
 
     # ---------------- staff roster ----------------
     def all_staff(self) -> dict:

@@ -36,6 +36,22 @@ DEFAULTS = {
     # -in moderators survive the restart, so it costs nothing. Turn it off when
     # hosting, where the file watcher is pure overhead.
     "auto_reload": True,
+    # Watch this group's VRChat audit log for instance kicks and warns, and
+    # ask the moderator who issued each one for a reason. Needs a signed-in
+    # moderator holding `group-audit-view` on that group. Empty disables it.
+    "audit_group": "",
+    "audit_poll_seconds": 60,
+    # Where a completed log is announced. Same embed format as the Teen
+    # Chillout web tool, so both can post to the same channel.
+    "discord_webhook_url": "",
+    # Second channel for age removals, mirroring that tool's behaviour.
+    "overaged_webhook_url": "",
+    # Offered as one-click chips on the reason prompt.
+    "common_reasons": [
+        "Underage", "Overage", "Refused Age Check", "Age Baiting",
+        "Harassment", "Disrespect Staff", "Racist Remarks", "Slur Usage",
+        "Sexual Comments", "Inappropriate Comments", "Advertising", "Trolling",
+    ],
     # Tail this machine's VRChat log for the instance roster, so Screening
     # works without the desktop app running. Ignored automatically when
     # there is no VRChat log directory (e.g. a Linux host), where the roster

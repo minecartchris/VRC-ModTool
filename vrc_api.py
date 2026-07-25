@@ -154,6 +154,26 @@ class VRChatAPI:
         r.raise_for_status()
         return r.json()
 
+    def get_group_audit_logs(self, group_id: str, *, n: int = 60,
+                             event_types: str = "",
+                             start_date: str = "") -> dict:
+        """Group audit log — who moderated whom, and when.
+
+        Needs the `group-audit-view` permission on that group; without it
+        VRChat answers 403 even though the group is visible to you. Instance
+        kicks and warns appear as group.instance.kick / group.instance.warn,
+        with the target's display name only inside the description text.
+        """
+        params: dict = {"n": n}
+        if event_types:
+            params["eventTypes"] = event_types
+        if start_date:
+            params["startDate"] = start_date
+        r = self.s.get(f"{API}/groups/{group_id}/auditLogs", params=params,
+                       timeout=20)
+        r.raise_for_status()
+        return r.json()
+
     def update_user_note(self, target_user_id: str, note: str) -> dict:
         """Set (replace) your private note on a user. Read the existing note
         first and merge if you want to append rather than overwrite."""

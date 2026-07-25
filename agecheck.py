@@ -11,9 +11,34 @@ Verdicts:
     in_range  verified; the desktop also writes the note tag in VRChat
 """
 
+import re
 import time
 
 import db
+
+#: Reason text that is really an age verdict. Matched as a substring against
+#: the whole reason, which is a comma-joined multi-select plus free text
+#: ("Age Baiting, Refused Age Check - sounded 12 and said he was 19"). The two
+#: keys never overlap, so order is only for readability.
+AGE_REASONS = (("underage", "under"), ("overage", "over"))
+
+#: Moderators write the age straight into the reason ("Overage - 20").
+#: Deliberately narrow: only a number attached to the verdict word counts, so
+#: prose like "sounded 12 and said he was 19" is left alone, not guessed at.
+_AGE_IN_REASON = re.compile(r"(?:over|under)age[d]?\s*[-:]?\s*(\d{1,3})\b", re.I)
+
+
+def verdict_for_reason(reason: str) -> str | None:
+    low = (reason or "").lower()
+    return next((v for key, v in AGE_REASONS if key in low), None)
+
+
+def age_in_reason(reason: str) -> int | None:
+    match = _AGE_IN_REASON.search(reason or "")
+    if not match:
+        return None
+    age = int(match.group(1))
+    return age if 1 <= age <= 120 else None
 
 VERDICTS = ("over", "under", "in_range")
 
@@ -29,14 +54,20 @@ def record(database: "db.Database", *, name: str, user_id: str = "",
            world_name: str = "", world_id: str = "", instance_id: str = "",
            checked_by: str = "", checked_by_id: str = "",
            source: str = "web", note: str = "",
-           players: list[dict] | None = None) -> tuple[dict, dict | None]:
-    """Write the check (and its incident, if any). Returns (check, incident)."""
+           players: list[dict] | None = None,
+           incident_id: str = "") -> tuple[dict, dict | None]:
+    """Write the check (and its incident, if any). Returns (check, incident).
+
+    Pass `incident_id` when the caller has already filed the incident — an
+    audit-log kick is one event, and letting this create a second one would
+    double-count it in every list and report.
+    """
     if verdict not in VERDICTS:
         raise ValueError(f"unknown verdict {verdict!r}")
     now = time.time()
     incident = None
 
-    if verdict in INCIDENT_VERDICTS:
+    if verdict in INCIDENT_VERDICTS and not incident_id:
         age_txt = f" — reported age {reported_age}" if reported_age else ""
         subject = players or [{"name": name, "user_id": user_id,
                                "joined_at": now}]
@@ -65,7 +96,7 @@ def record(database: "db.Database", *, name: str, user_id: str = "",
         "verdict": verdict, "reported_age": reported_age,
         "world_name": world_name, "world_id": world_id,
         "instance_id": instance_id,
-        "incident_id": incident["id"] if incident else "",
+        "incident_id": incident["id"] if incident else incident_id,
         "checked_by": checked_by, "checked_by_id": checked_by_id,
         "note": note, "source": source, "created_at": now,
     }

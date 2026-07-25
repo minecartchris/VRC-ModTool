@@ -18,12 +18,16 @@
   </a>
   <nav>
     {% for href, ico, text in [("/", "dashboard", "Dashboard"),
+                               ("/pending", "help", "Pending"),
                                ("/incidents", "flag", "Incidents"),
                                ("/age-checks", "verified", "Age Checks"),
                                ("/screening", "group", "Screening")] %}
       {% set active = (path == href) if href == "/" else path.startswith(href) %}
       <a class="nav {{ 'on' if active }}" href="{{ href }}">
         {{ icon(ico) }}<span class="t">{{ text }}</span>
+        {% if href == "/pending" and pending_total %}
+        <span class="nav-count {{ 'urgent' if my_pending }}">{{ pending_total }}</span>
+        {% endif %}
       </a>
     {% endfor %}
   </nav>
@@ -51,6 +55,20 @@
 
 <main>
   <div class="wrap">
+  {# The prompt itself: shown on whatever page they are on, because a kick is
+     recorded seconds after it happens and the reason is only in their head. #}
+  {% if my_pending and path != "/pending" %}
+  <div class="banner banner-ask">
+    {{ icon("warning", 18) }}
+    <span>
+      <strong>Why did you {{ my_pending[0].action|lower }}
+      {{ my_pending[0].target_name }}?</strong>
+      {{ fmt_ago(my_pending[0].created_at) }}{% if my_pending|length > 1 %}
+      · {{ my_pending|length - 1 }} more waiting{% endif %}
+    </span>
+    <a class="btn-primary btn-sm" href="/pending" style="margin-left:auto">Add reason</a>
+  </div>
+  {% endif %}
   {% if session and not live_api %}
   <p class="banner banner-warn">{{ icon("warning", 18) }}
     No live VRChat connection on this session — the server restarted since you

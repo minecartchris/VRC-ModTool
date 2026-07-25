@@ -11,6 +11,7 @@ Two ways in:
 
 import secrets
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -25,6 +26,8 @@ import db
 import report
 from paths import SHOTS_DIR
 from webapp import config as webconfig
+from webapp import discord
+from webapp.audit import AuditWatcher
 from webapp.auth import AuthError, SessionManager, staff_groups
 from webapp.roster import LOCAL_CLIENT, LocalRosterPublisher
 
@@ -55,6 +58,12 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         publisher.start()
     app.state.roster = publisher
 
+    # Ask moderators why, while they still remember.
+    audit = AuditWatcher(database, cfg, sessions,
+                         interval=float(cfg.get("audit_poll_seconds", 60) or 60))
+    audit.start()
+    app.state.audit = audit
+
     app.mount("/static", StaticFiles(directory=str(HERE / "static")),
               name="static")
     templates = Jinja2Templates(directory=str(HERE / "templates"))
@@ -66,6 +75,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     # needs icons.
     templates.env.globals["icon"] = (
         templates.env.get_template("_icons.html").module.icon)
+    templates.env.globals["reason_form"] = (
+        templates.env.get_template("_reason_form.html").module.reason_form)
 
     # ---------------- plumbing ----------------
     @app.exception_handler(LoginRequired)
@@ -101,6 +112,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                 f"?{request.url.query}" if request.url.query else ""),
             "my_role": (database.all_staff().get(sess["user_id"], {}).get("role")
                         if sess else None),
+            # Drives the "you kicked someone — why?" prompt on every page.
+            "my_pending": (database.pending_actions(sess["user_id"])
+                           if sess else []),
+            "pending_total": len(database.pending_actions()) if sess else 0,
             **ctx})
 
     def set_session_cookie(resp: Response, token: str) -> None:
@@ -278,6 +293,85 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         database.delete_age_check(check_id)
         return RedirectResponse(_safe_next(next, "/age-checks"),
                                 status_code=303)
+
+    # ---------------- pending kicks / warns ----------------
+    @app.get("/pending", response_class=HTMLResponse)
+    def pending_page(request: Request):
+        sess = require(request)
+        mine = database.pending_actions(sess["user_id"])
+        others = [a for a in database.pending_actions()
+                  if a["actor_id"] != sess["user_id"]]
+        return page(request, "pending.html", session=sess, mine=mine,
+                    others=others, audit=audit.status(),
+                    reasons=cfg.get("common_reasons") or [],
+                    recent=database.pending_actions(include_done=True)[:15])
+
+    @app.post("/pending/{action_id}/reason")
+    def pending_reason(request: Request, action_id: str,
+                       reasons: list[str] = Form(default=[]),
+                       detail: str = Form(""), next: str = Form("")):
+        """Turn a bare audit-log kick into a real, reasoned log entry."""
+        sess = require(request)
+        back = _safe_next(next, "/pending")
+        action = database.get_pending_action(action_id)
+        if not action or action["resolved_at"]:
+            return RedirectResponse(back, status_code=303)
+
+        reason = ", ".join(r for r in reasons if r)
+        if detail.strip():
+            reason = f"{reason} - {detail.strip()}" if reason else detail.strip()
+        if not reason:
+            return RedirectResponse(f"{back}?err=no_reason", status_code=303)
+
+        target = {"name": action["target_name"], "user_id": action["target_id"]}
+        world_id, _, instance_id = (action["location"] or "").partition(":")
+        incident = {
+            "id": db.new_id(),
+            "created_at": action["created_at"] or time.time(),
+            "trigger": f"{action['action']} — {reason}"[:160],
+            "transcript": [f"Reason: {reason}"],
+            "world_name": "", "world_id": world_id, "instance_id": instance_id,
+            "players": [target],
+            "clip_path": "", "screenshot_path": "", "notes": "",
+            "status": "reported",
+            "reported_by": action["actor_name"] or sess["name"],
+            "origin": "vrchat-audit",
+        }
+        database.upsert_incident(incident)
+
+        # An age reason is also an age check, decided by the same rules the
+        # Firestore import uses so the two can't disagree.
+        verdict = agecheck.verdict_for_reason(reason)
+        if verdict:
+            # A bare number in the detail box is the age they gave; otherwise
+            # fall back to digging it out of the reason ("Overage - 20").
+            age = (int(detail.strip()) if detail.strip().isdigit()
+                   and 1 <= int(detail.strip()) <= 120
+                   else agecheck.age_in_reason(reason))
+            agecheck.record(
+                database, name=target["name"], user_id=target["user_id"],
+                verdict=verdict, reported_age=age,
+                world_id=world_id, instance_id=instance_id,
+                checked_by=action["actor_name"] or sess["name"],
+                checked_by_id=action["actor_id"], source="vrchat-audit",
+                note=reason, incident_id=incident["id"])
+
+        database.resolve_pending_action(action_id, reason, incident["id"])
+        discord.post(cfg, action=action["action"],
+                     moderator=action["actor_name"] or sess["name"],
+                     reason=reason,
+                     timestamp=datetime.fromtimestamp(
+                         action["created_at"] or time.time(),
+                         tz=timezone.utc).isoformat(),
+                     targets=[target])
+        return RedirectResponse(back, status_code=303)
+
+    @app.post("/pending/{action_id}/dismiss")
+    def pending_dismiss(request: Request, action_id: str,
+                        next: str = Form("")):
+        require(request)
+        database.dismiss_pending_action(action_id)
+        return RedirectResponse(_safe_next(next, "/pending"), status_code=303)
 
     # ---------------- screening ----------------
     @app.get("/screening", response_class=HTMLResponse)
