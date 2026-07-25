@@ -322,7 +322,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                     current=current, rosters=rosters, show=show, q=q,
                     counts=counts, verdicts=agecheck.VERDICTS,
                     live=_roster_live(current, publisher),
-                    source_local=bool(current
+                    # Only claim "read from this PC's log" if this server is
+                    # actually the one reading it. A database restored onto a
+                    # different host carries the local reporter's row with it.
+                    source_local=bool(publisher and current
                                       and current["client_id"] == LOCAL_CLIENT))
 
     @app.post("/screening/tag")
