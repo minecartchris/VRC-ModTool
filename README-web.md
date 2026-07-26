@@ -154,9 +154,11 @@ tools looking like one suite.
 Two deliberate differences: fonts and icons are **not** fetched from Google.
 This server handles records about minors on a LAN that may have no internet,
 so it makes no third-party requests — icons are inline SVG
-(`templates/_icons.html`) and the type stack falls back to the system UI font.
-An icon *font* that fails to load renders its ligature as raw text, which
-would leave the nav reading "dashboard flag group" in words.
+(`templates/_icons.html`), and Hanken Grotesk leads the type stack so it is
+used wherever it happens to be installed, falling back to the system UI font
+instead of being downloaded. An icon *font* that fails to load renders its
+ligature as raw text, which would leave the nav reading "dashboard flag group"
+in words.
 
 ## Who is a moderator
 
