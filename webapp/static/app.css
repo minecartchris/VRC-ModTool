@@ -132,6 +132,17 @@ h3 { font-size: 14px; line-height: 20px; letter-spacing: 0.05em; font-weight: 60
 }
 .topbar .who { display: flex; align-items: center; gap: 10px; color: var(--on-surface-variant); }
 .topbar .who .name { color: var(--on-surface); font-weight: 600; font-size: 14px; }
+/* Your own name is the way into your settings, so it has to look clickable
+   without turning the top bar into a row of links. */
+.topbar .who .me {
+  display: flex; align-items: center; gap: 10px; color: inherit;
+  padding: 4px 10px; border-radius: var(--r-full);
+  border: 1px solid transparent; transition: background-color .2s, border-color .2s;
+}
+.topbar .who .me:hover {
+  background: var(--surface-container-high); border-color: var(--outline-variant);
+  text-decoration: none;
+}
 
 main { margin: var(--bar) 0 0 var(--rail); padding: var(--lg) var(--gutter) 64px; }
 /* Signed out there is no rail and no top bar, so main must not reserve room

@@ -42,8 +42,9 @@
 <header class="topbar">
   <button id="live-toggle" class="live-toggle" type="button">live</button>
   <div class="who">
-    {{ icon("account", 22) }}
-    <span class="name">{{ session.name }}</span>
+    <a class="me" href="/settings" title="Your settings, and the roster agent">
+      {{ icon("account", 22) }}
+      <span class="name">{{ session.name }}</span></a>
     {# Everyone who can sign in passed the staff-group check, so the badge is
        always earned — it names which group granted it. #}
     <span class="pill {{ 'pill-hr' if my_role == 'HR' else 'pill-mod' }}"

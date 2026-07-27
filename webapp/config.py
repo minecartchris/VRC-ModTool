@@ -74,6 +74,11 @@ DEFAULTS = {
     "media_roots": [],
     # Set True only behind HTTPS; marks the session cookie Secure.
     "https_only": False,
+    # The packaged roster agent, offered for download on a moderator's settings
+    # page. Empty falls back to dist/VRChatRosterAgent.exe next to the code,
+    # which is where build_agent.py leaves it; a hosted deployment points this
+    # at wherever the build was uploaded. Missing just hides the button.
+    "agent_exe": "",
 }
 
 

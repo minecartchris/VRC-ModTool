@@ -34,6 +34,7 @@ from webapp.roster import LOCAL_CLIENT, LocalRosterPublisher
 
 SESSION_COOKIE = "modsession"
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
 
 
 class LoginRequired(Exception):
@@ -606,6 +607,46 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             source="web", note=f"tagged '{word}' in VRChat note")
         return RedirectResponse(back, status_code=303)
 
+    # ---------------- your account ----------------
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings(request: Request):
+        sess = require(request)
+        return page(request, "settings.html", session=sess,
+                    my_key=database.user_key(sess["user_id"]),
+                    agent_exe=_agent_exe(cfg),
+                    base_url=_public_base(request, cfg))
+
+    @app.post("/settings/key")
+    def settings_key(request: Request, action: str = Form("new")):
+        """Mint, replace or revoke this moderator's roster key.
+
+        Replacing *is* the revoke path: there is one row per moderator, so an
+        agent still holding the old value starts failing on its next heartbeat
+        rather than keeping a second working key alive.
+        """
+        sess = require(request)
+        if action == "revoke":
+            database.clear_user_key(sess["user_id"])
+        else:
+            database.set_user_key(sess["user_id"], sess["name"],
+                                  secrets.token_urlsafe(24))
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.get("/settings/agent")
+    def settings_agent(request: Request):
+        # Signed-in only. The download is a build of our own client with a
+        # server address in it; there is no reason for it to be public.
+        require(request)
+        exe = _agent_exe(cfg)
+        if not exe:
+            return PlainTextResponse(
+                "No agent build on this server yet. Build one with "
+                "`python build_agent.py --server … --token …` and point "
+                "\"agent_exe\" in web_config.json at the result.",
+                status_code=404)
+        return FileResponse(exe, filename=exe.name,
+                            media_type="application/octet-stream")
+
     # ---------------- media ----------------
     @app.get("/media/{kind}/{inc_id}")
     def media(request: Request, kind: str, inc_id: str):
@@ -621,12 +662,16 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         return FileResponse(resolved)
 
     # ---------------- sync API ----------------
-    def require_token(token: str | None, *, allow_roster: bool = False) -> None:
-        """Full sync token, or — on the roster endpoint only — the roster token.
+    def require_token(token: str | None, *,
+                      allow_roster: bool = False) -> dict | None:
+        """Full sync token, or — on the roster endpoint only — a roster key.
 
-        The roster token ships inside a binary handed to moderators, so it is
-        assumed public. Keeping it off push/pull is what stops a leaked agent
-        from reading age checks and incidents.
+        The roster credentials ship inside a binary handed to moderators, so
+        they are assumed public. Keeping them off push/pull is what stops a
+        leaked agent from reading age checks and incidents.
+
+        Returns the moderator whose personal key was used, or None for the
+        shared tokens, so the roster can be attributed to a person.
         """
         accepted = [(cfg.get("sync_token") or "").strip()]
         if allow_roster:
@@ -634,9 +679,14 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         accepted = [t for t in accepted if t]
         if not accepted:
             raise _ApiError(503, "sync API disabled: no sync_token configured")
-        if not token or not any(secrets.compare_digest(token, t)
-                                for t in accepted):
-            raise _ApiError(401, "bad sync token")
+        if token and any(secrets.compare_digest(token, t) for t in accepted):
+            return None
+        if allow_roster and token:
+            owner = database.user_by_key(token)
+            if owner:
+                database.touch_user_key(token)
+                return owner
+        raise _ApiError(401, "bad sync token")
 
     @app.exception_handler(_ApiError)
     async def _api_error(_request: Request, exc: "_ApiError"):
@@ -676,10 +726,13 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     @app.post("/api/sync/roster")
     def sync_roster(payload: dict = Body(...),
                     x_sync_token: str | None = Header(None)):
-        require_token(x_sync_token, allow_roster=True)
+        owner = require_token(x_sync_token, allow_roster=True)
+        # A personal key names the moderator who is in the instance, which is
+        # what Screening should show — the agent otherwise reports a PC's
+        # hostname, and "DESKTOP-4F9K2" says nothing about who to ask.
+        name = owner["name"] if owner else payload.get("client_name", "")
         database.upsert_roster(payload.get("client_id", "default"),
-                               payload.get("roster", {}),
-                               payload.get("client_name", ""))
+                               payload.get("roster", {}), name)
         return {"ok": True}
 
     @app.post("/api/sync/staff")
@@ -709,6 +762,33 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
 
 # ---------------- helpers ----------------
+def _agent_exe(cfg: dict) -> Path | None:
+    """The packaged roster agent, if this server has one to hand out.
+
+    Absent is the normal case on a fresh checkout — build_agent.py has to be
+    run on Windows — so the settings page checks rather than offering a link
+    that 404s.
+    """
+    configured = (cfg.get("agent_exe") or "").strip()
+    path = (Path(configured) if configured
+            else ROOT / "dist" / "VRChatRosterAgent.exe")
+    return path if path.is_file() else None
+
+
+def _public_base(request: Request, cfg: dict) -> str:
+    """The URL a moderator's agent should be pointed at.
+
+    Read off the request rather than the config because the server has no idea
+    what it is called from outside — behind the tunnel it only ever binds
+    127.0.0.1 — and forced to https where the session cookie is already
+    Secure-only, since the proxy terminates TLS and forwards plain http.
+    """
+    base = str(request.base_url).rstrip("/")
+    if cfg.get("https_only") and base.startswith("http://"):
+        base = "https://" + base[len("http://"):]
+    return base
+
+
 class _ApiError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)

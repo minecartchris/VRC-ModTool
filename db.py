@@ -157,6 +157,23 @@ CREATE TABLE IF NOT EXISTS user_reasons (
     PRIMARY KEY (user_id, reason)
 );
 
+-- One roster key per moderator, minted from their settings page and pasted
+-- into the roster agent. It is accepted on /api/sync/roster and nothing else,
+-- so a key that leaks costs a bogus roster rather than the records — the same
+-- reasoning as the shared roster_token, except this one names its owner and
+-- they can replace it themselves.
+--
+-- Kept in the clear rather than hashed: the moderator has to be able to read it
+-- back off the page when they set the agent up on a second PC, and it grants
+-- strictly less than the session cookie sitting in their browser already.
+CREATE TABLE IF NOT EXISTS user_keys (
+    user_id    TEXT PRIMARY KEY,
+    name       TEXT,
+    roster_key TEXT UNIQUE,
+    created_at REAL,
+    last_used  REAL
+);
+
 -- Sync cursors, one row per peer ("server" on a desktop client).
 CREATE TABLE IF NOT EXISTS sync_state (
     peer         TEXT PRIMARY KEY,
@@ -627,6 +644,39 @@ class Database:
     def remove_user_reason(self, user_id: str, reason: str) -> None:
         self._exec("DELETE FROM user_reasons WHERE user_id=? AND reason=?",
                    (user_id, reason))
+
+    # ---------------- personal roster keys ----------------
+    def user_key(self, user_id: str) -> dict | None:
+        row = self._one("SELECT * FROM user_keys WHERE user_id=?", (user_id,))
+        return dict(row) if row else None
+
+    def set_user_key(self, user_id: str, name: str, key: str) -> None:
+        """Mint or replace a moderator's roster key.
+
+        Replacing is how a key is revoked, so the old value has to stop working
+        in the same write — hence one row per user rather than a history.
+        """
+        self._exec(
+            "INSERT INTO user_keys (user_id, name, roster_key, created_at, "
+            "last_used) VALUES (?,?,?,?,0) "
+            "ON CONFLICT(user_id) DO UPDATE SET name=excluded.name, "
+            "roster_key=excluded.roster_key, created_at=excluded.created_at, "
+            "last_used=0",
+            (user_id, name or "", key, time.time()))
+
+    def clear_user_key(self, user_id: str) -> None:
+        self._exec("DELETE FROM user_keys WHERE user_id=?", (user_id,))
+
+    def user_by_key(self, key: str) -> dict | None:
+        if not key:
+            return None
+        row = self._one("SELECT * FROM user_keys WHERE roster_key=?", (key,))
+        return dict(row) if row else None
+
+    def touch_user_key(self, key: str) -> None:
+        """Record that a key just reported, so its owner can see it working."""
+        self._exec("UPDATE user_keys SET last_used=? WHERE roster_key=?",
+                   (time.time(), key))
 
     # ---------------- staff roster ----------------
     def all_staff(self) -> dict:

@@ -241,6 +241,7 @@ python run_web.py --host 0.0.0.0
 | `screening_users` | cached VRChat note + groups per user, so nobody is looked up twice |
 | `rosters` | last instance snapshot each desktop client reported |
 | `web_sessions` | opaque session tokens; **no passwords, no VRChat cookies** |
+| `user_keys` | one roster key per moderator, mintable from their settings page |
 
 Your VRChat auth cookie lives in server memory only, for as long as the process
 runs. Restart the server and you stay signed in for browsing records, but
@@ -267,6 +268,7 @@ web writes statuses, notes and age checks.
 | `/incidents`, `/incidents/{id}` | list/search, detail with evidence, notes, status, paste-ready report |
 | `/age-checks` | log + record a check (over/under also files an incident) |
 | `/screening` | live roster, filterable by verification state, with per-player verdict buttons and VRChat note tagging |
+| `/settings` | your account, the roster agent download, your personal key |
 | `/api/state` | change fingerprint polled by open pages |
 | `/api/sync/push`, `/api/sync/pull`, `/api/sync/roster` | desktop sync; `X-Sync-Token` header |
 | `/healthz` | liveness |
@@ -362,6 +364,10 @@ Build with `roster_token`. A leaked agent then costs you a bogus roster, not
 your moderation records. Verified: the roster token gets 200 on `/roster` and
 401 on both `/pull` and `/push`.
 
+Moderators should run it with their own key rather than the baked-in token —
+see [Your settings](#your-settings-and-personal-roster-keys). Same scope, but
+the roster then carries their name, and they can revoke it themselves.
+
 ## Importing the Teen Chillout Firestore history
 
 The web tool (`team-chillo-mod-tool`) keeps its history in Firestore:
@@ -445,6 +451,55 @@ because both call the same helper.
 **Personal shortcuts.** Anyone can add reason chips to their own account; they
 appear on the Kick Log and the audit prompt, and nobody else sees them. Stored
 in `user_reasons`, keyed by VRChat user id.
+
+## Your settings, and personal roster keys
+
+Clicking your own name in the top bar opens `/settings`: which staff group let
+you in, the roster agent, and your personal key.
+
+**There is no allowlist.** Access is staff-group membership and nothing else —
+the page says so, because the tool this replaced (`team-chillo-mod-tool`)
+refused people with *"your VRChat account is not on the admin allowlist"* and
+that error still gets reported here. The `staff` table this tool imports is
+displayed, never enforced.
+
+**Getting the agent.** The page serves the packaged agent when the server has a
+build to hand out:
+
+```json
+"agent_exe": "/opt/modsuite/agent/VRChatRosterAgent.exe"
+```
+
+Empty falls back to `dist/VRChatRosterAgent.exe` next to the code, which is
+where `build_agent.py` leaves it. Absent, the page says so and shows the
+command to run it from a checkout instead of offering a link that 404s. The
+download needs a session — it is a build of our own client, pointed at this
+server, so there is no reason for it to be public.
+
+**The key.** One per moderator, minted on that page and pasted into the agent:
+
+```
+VRChatRosterAgent.exe --server https://vrcmod.example.cc --token YOUR_KEY
+```
+
+| | `sync_token` | `roster_token` | a personal key |
+|---|---|---|---|
+| Read and write every record | yes | no | no |
+| Report an instance roster | yes | yes | yes |
+| Names who is reporting | no | no | **yes** |
+| Replaceable without a redeploy | no | no | **yes** |
+
+That third row is the point of it. The agent otherwise reports its PC's
+hostname, and `DESKTOP-4F9K2` on the Screening page tells nobody who to ask
+about the roster; a personal key makes it read as the moderator who is actually
+in the instance. The fourth row is the other half: **Regenerate** and **Revoke**
+take effect on the agent's next heartbeat, about 30 seconds, without touching
+the server config or rebuilding the .exe.
+
+Keys are stored in `user_keys` in the clear, deliberately. A moderator has to be
+able to read one back to set up a second PC, and it grants strictly less than
+the session cookie already sitting in their browser. Regenerating replaces the
+row, so there is never a second key of yours still working.
 
 ## Audit access is per-account
 
