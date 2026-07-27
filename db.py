@@ -281,6 +281,7 @@ class Database:
             self.conn.commit()
         self._migrate_columns()
         self._migrate_json()
+        self._seed_known_users()
 
     def close(self) -> None:
         with self._lock:
@@ -913,6 +914,19 @@ class Database:
         return False
 
     # ---------------- migrations ----------------
+    def _seed_known_users(self) -> None:
+        """Backfill from sessions, once, for a database that predates the list.
+
+        known_users is written on sign-in, so on an existing deployment it
+        would start empty and nobody could be appointed an admin until they
+        happened to sign in again. Sessions carry the same id and name.
+        OR IGNORE, so a real sign-in always wins.
+        """
+        self._exec(
+            "INSERT OR IGNORE INTO known_users (user_id, name, first_seen, "
+            "last_seen) SELECT user_id, name, created_at, created_at "
+            "FROM web_sessions WHERE user_id <> ''")
+
     def _migrate_columns(self) -> None:
         for table, cols in _ADDED_COLUMNS.items():
             have = {r["name"] for r in self._query(f"PRAGMA table_info({table})")}
