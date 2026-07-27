@@ -74,6 +74,10 @@ DEFAULTS = {
     "media_roots": [],
     # Set True only behind HTTPS; marks the session cookie Secure.
     "https_only": False,
+    # VRChat ids who are always admins, whatever the admins table says — the
+    # backstop against the last admin removing themselves and locking the
+    # tool's own administration out. Everyone else is appointed in the UI.
+    "root_admins": [],
     # The packaged roster agent, offered for download on a moderator's settings
     # page. Empty falls back to dist/VRChatRosterAgent.exe next to the code,
     # which is where build_agent.py leaves it; a hosted deployment points this

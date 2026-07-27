@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Roster agent — Mod Suite{% endblock %}
+{% block content %}
+<div>
+  <h1>Roster agent</h1>
+  <p class="lead">Code <strong>{{ code }}</strong></p>
+</div>
+
+{% if not pairing %}
+<section class="card">
+  <p class="banner banner-error" style="margin:0">{{ icon("warning", 18) }}
+    <span><strong>No request with that code.</strong> Codes last 10 minutes —
+      start the agent again and it will show a fresh one.</span></p>
+</section>
+
+{% elif pairing.denied_at %}
+<section class="card">
+  <p class="banner banner-warn" style="margin:0">{{ icon("warning", 18) }}
+    <span><strong>Declined.</strong> That agent has nothing and cannot report.
+      If it was yours after all, start it again for a new code.</span></p>
+</section>
+
+{% elif pairing.expires_at < now and not pairing.approved_at %}
+<section class="card">
+  <p class="banner banner-warn" style="margin:0">{{ icon("warning", 18) }}
+    <span><strong>That code expired.</strong> Start the agent again for a new
+      one.</span></p>
+</section>
+
+{% elif pairing.user_id != session.user_id %}
+<section class="card">
+  <p class="banner banner-warn" style="margin:0">{{ icon("warning", 18) }}
+    <span><strong>{{ pairing.user_name }} already set this one up.</strong>
+      It reports as them, not you. They can revoke it from their own
+      settings.</span></p>
+</section>
+
+{% else %}
+<section class="card">
+  <p class="banner banner-ask">{{ icon("check", 18) }}
+    <span><strong>Set up.</strong>
+      {{ pairing.client_name or "That PC" }} now reports rosters as
+      <strong>{{ session.name }}</strong>.
+      {% if pairing.claimed_at %}The agent has its key — the window it is
+        running in will have said so.
+      {% else %}Waiting for the agent to pick up its key; that happens within a
+        few seconds.{% endif %}</span></p>
+
+  <p class="dim">It can report who is in an instance and nothing else — no
+    incidents, no age checks. Screening will show your name as the reporter.</p>
+
+  <p class="banner banner-warn">{{ icon("warning", 18) }}
+    <span><strong>Didn't just start an agent?</strong> Then this link came from
+      somebody else and you should undo it — that PC would be reporting under
+      your name.</span></p>
+
+  <div class="row-form" style="margin-top:16px">
+    <form method="post" action="/pair/{{ code }}">
+      <button class="btn-danger" type="submit">
+        Undo — I didn't start this</button>
+    </form>
+    <a class="btn-sm" href="/settings"
+       style="display:inline-block; padding:8px 12px">Your agents</a>
+  </div>
+</section>
+{% endif %}
+
+<p class="dim"><a href="/settings">{{ icon("settings", 14) }} Back to your
+  settings</a></p>
+{% endblock %}

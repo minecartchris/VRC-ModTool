@@ -86,18 +86,19 @@ reporter at all, from any browser.
 For a hosted server, one moderator who is in the instance runs this:
 
 ```bash
-python agent.py --server https://mods.example.com --token YOUR_SYNC_TOKEN
+python agent.py --server https://mods.example.com
 ```
 
-(or `agent.bat --server ... --token ...` on Windows, then just double-click it
-afterwards — settings are remembered in `agent_config.json`).
+(or `agent.bat --server ...` on Windows, then just double-click it afterwards —
+settings are remembered in `agent_config.json`). It asks to be paired on first
+run; `--pair` sets it up again after a key is revoked.
 
 It tails the VRChat log and POSTs the roster. That is all it does: **no Vosk
 model, no audio capture, no Tkinter, no clipping** — its only dependency is
 `requests`. One person running it gives every browser a live Screening page,
 including moderators on phones who have nothing installed.
 
-The token is `sync_token` from the server's `web_config.json`.
+No token is needed: the first run pairs through the panel.
 
 Set `"read_local_log": false` to stop the server reading its own log (it is
 skipped automatically where there is no VRChat log directory, e.g. a Linux
@@ -241,7 +242,10 @@ python run_web.py --host 0.0.0.0
 | `screening_users` | cached VRChat note + groups per user, so nobody is looked up twice |
 | `rosters` | last instance snapshot each desktop client reported |
 | `web_sessions` | opaque session tokens; **no passwords, no VRChat cookies** |
-| `user_keys` | one roster key per moderator, mintable from their settings page |
+| `agent_keys` | one roster key per paired PC, revocable on its own |
+| `agent_pairings` | short-lived pairing codes, single-use |
+| `known_users` | everyone who has signed in, so admins can be appointed later |
+| `admins` | who can appoint admins, revoke any agent, and edit or delete a log |
 
 Your VRChat auth cookie lives in server memory only, for as long as the process
 runs. Restart the server and you stay signed in for browsing records, but
@@ -268,7 +272,10 @@ web writes statuses, notes and age checks.
 | `/incidents`, `/incidents/{id}` | list/search, detail with evidence, notes, status, paste-ready report |
 | `/age-checks` | log + record a check (over/under also files an incident) |
 | `/screening` | live roster, filterable by verification state, with per-player verdict buttons and VRChat note tagging |
-| `/settings` | your account, the roster agent download, your personal key |
+| `/settings` | your account, the agent download, your paired PCs |
+| `/admin` | admins, every paired agent, and revoking any of them |
+| `/pair/{code}` | approve an agent that is asking to report as you |
+| `/api/agent/pair/*` | the agent's side of that: start, then poll |
 | `/api/state` | change fingerprint polled by open pages |
 | `/api/sync/push`, `/api/sync/pull`, `/api/sync/roster` | desktop sync; `X-Sync-Token` header |
 | `/healthz` | liveness |
@@ -338,14 +345,17 @@ ssh root@$PVE_HOST 'pct push 101 /tmp/modsuite.tar.gz /tmp/a.tar.gz &&
 ## Packaging the agent as an .exe
 
 ```bash
-python build_agent.py --server https://vrcmod.example.cc --token ROSTER_TOKEN
+python build_agent.py --server https://vrcmod.example.cc
 ```
 
-Produces `dist/VRChatRosterAgent.exe` (~15 MB) with the server URL and token
-compiled in. A moderator downloads one file, double-clicks it, and leaves it
-running while they are in the instance — no Python, no dependencies, nothing
-to configure. It writes `agent_config.json` next to itself so the settings
-survive restarts.
+Produces `dist/VRChatRosterAgent.exe` (~15 MB) with the server URL compiled in
+and **no credential at all** — it pairs on first run (above), so a leaked build
+is worth nothing. A moderator downloads one file, double-clicks it, opens the
+link it prints, and leaves it running while they are in the instance. It writes
+`agent_config.json` next to itself so the settings survive restarts.
+
+`--token ROSTER_TOKEN` still bakes one in for the old double-click-and-go
+behaviour, at the cost of shipping a shared secret inside a binary.
 
 Windows SmartScreen warns on first run because the binary is unsigned:
 *More info → Run anyway*.
@@ -364,9 +374,8 @@ Build with `roster_token`. A leaked agent then costs you a bogus roster, not
 your moderation records. Verified: the roster token gets 200 on `/roster` and
 401 on both `/pull` and `/push`.
 
-Moderators should run it with their own key rather than the baked-in token —
-see [Your settings](#your-settings-and-personal-roster-keys). Same scope, but
-the roster then carries their name, and they can revoke it themselves.
+Better still, bake in neither and let each PC pair itself — same scope, but the
+roster carries the moderator's name and either of you can revoke that one PC.
 
 ## Importing the Teen Chillout Firestore history
 
@@ -455,7 +464,7 @@ in `user_reasons`, keyed by VRChat user id.
 ## Your settings, and personal roster keys
 
 Clicking your own name in the top bar opens `/settings`: which staff group let
-you in, the roster agent, and your personal key.
+you in, the roster agent to download, and the PCs reporting as you.
 
 **There is no allowlist.** Access is staff-group membership and nothing else —
 the page says so, because the tool this replaced (`team-chillo-mod-tool`)
@@ -476,30 +485,94 @@ command to run it from a checkout instead of offering a link that 404s. The
 download needs a session — it is a build of our own client, pointed at this
 server, so there is no reason for it to be public.
 
-**The key.** One per moderator, minted on that page and pasted into the agent:
+### Setting an agent up without handling a key
 
-```
-VRChatRosterAgent.exe --server https://vrcmod.example.cc --token YOUR_KEY
-```
+A key that gets copy-pasted ends up in a Discord message. So the agent asks for
+one itself, and the moderator only ever handles a link:
 
-| | `sync_token` | `roster_token` | a personal key |
+1. run the agent — it prints a link and a short code, and opens the link;
+2. the moderator opens it in a browser where they are already signed in;
+3. opening it *is* the approval. The key comes back down the agent's own
+   connection, and it starts reporting.
+
+Nothing has to be read off a screen, so nothing can be photographed, streamed
+or pasted into a channel by mistake.
+
+| Endpoint | Who | What |
+|---|---|---|
+| `POST /api/agent/pair/start` | the agent, no credential | returns `code`, `secret`, `url` |
+| `GET /pair/{code}` | a signed-in moderator | approves it, on the spot |
+| `POST /api/agent/pair/poll` | the agent, with `secret` | `pending`, then the key, once |
+
+The code is short and unambiguous (no I, O, 0 or 1 — it gets read aloud), lasts
+10 minutes, and is single-use. Seeing one is not enough to steal the key:
+collecting it needs the `secret` only the agent holds, and approving it needs a
+staff session. `pair/start` is rate limited per IP because it is necessarily
+unauthenticated.
+
+The approval page says who it just authorised and offers **Undo — I didn't
+start this**, which declines it and pulls the key back if it has already been
+collected. That is the answer to a link arriving from somebody else.
+
+### One key per PC
+
+| | `sync_token` | `roster_token` | a paired key |
 |---|---|---|---|
 | Read and write every record | yes | no | no |
 | Report an instance roster | yes | yes | yes |
 | Names who is reporting | no | no | **yes** |
-| Replaceable without a redeploy | no | no | **yes** |
+| Revocable per machine, in one click | no | no | **yes** |
 
-That third row is the point of it. The agent otherwise reports its PC's
-hostname, and `DESKTOP-4F9K2` on the Screening page tells nobody who to ask
-about the roster; a personal key makes it read as the moderator who is actually
-in the instance. The fourth row is the other half: **Regenerate** and **Revoke**
-take effect on the agent's next heartbeat, about 30 seconds, without touching
-the server config or rebuilding the .exe.
+The agent otherwise reports its PC's hostname, and `DESKTOP-4F9K2` on the
+Screening page tells nobody who to ask about the roster. A paired key makes it
+read as the moderator who is actually in the instance.
 
-Keys are stored in `user_keys` in the clear, deliberately. A moderator has to be
-able to read one back to set up a second PC, and it grants strictly less than
-the session cookie already sitting in their browser. Regenerating replaces the
-row, so there is never a second key of yours still working.
+Desktop and laptop get a key each, listed on the settings page with when they
+last reported, so revoking one leaves the other running. Revoking takes effect
+on the agent's next heartbeat, about 30 seconds; that agent then prints what
+happened and how to pair again. Keys live in `agent_keys` in the clear —
+pairing means they normally never leave the two machines, and one grants
+strictly less than the session cookie already in that browser.
+
+**Setting one up by hand** is still there, folded away, for a PC you cannot
+open a browser on: mint a key, paste it in. That is the path pairing exists to
+avoid, so it is not the default.
+
+## Admins
+
+A second, smaller list on top of being a moderator. Moderating needs nothing
+from it; it exists for the handful of things that should not be everybody's.
+
+| An admin can | Anybody else |
+|---|---|
+| Appoint and remove other admins | — |
+| Revoke **anybody's** roster agent | revoke their own |
+| Edit a kick, warn or ban log | — |
+| Delete an incident | mark it *dismissed* |
+
+Deleting used to be open to every moderator. It is an admin action now: a
+record of a real moderation action should not disappear because somebody
+mis-clicked, and *dismissed* already exists for "this one doesn't matter".
+
+**Editing is recorded, not hidden.** A correction rewrites the action, reason
+and players, and appends to the log's own transcript what it said before and
+who changed it. The report text carries that with it, so a corrected log can
+never quietly disagree with a screenshot somebody already took.
+
+**Who can be appointed:** anyone who has signed in here at least once, picked
+from a dropdown. Signing in at all requires the staff group, so every candidate
+is already a moderator; and the tool having seen the account is what proves the
+id is real. The list comes from `known_users`, which is written on every
+sign-in and — unlike `web_sessions` — never purged.
+
+**Root admins** come from the config and cannot be removed in the UI:
+
+```json
+"root_admins": ["usr_…"]
+```
+
+That is the backstop against the last admin removing themselves and locking
+the tool's administration out of its own settings.
 
 ## Audit access is per-account
 

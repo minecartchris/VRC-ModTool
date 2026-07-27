@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Admin — Mod Suite{% endblock %}
+{% block content %}
+<div>
+  <h1>Admin</h1>
+  <p class="lead">Who administers this tool, and every agent reporting to it.</p>
+</div>
+
+{% if not am_admin_page %}
+<section class="card">
+  <p class="banner banner-warn" style="margin:0">{{ icon("warning", 18) }}
+    <span><strong>You are not an admin.</strong> Moderating does not need this
+      page — everything you can do is on the pages you already have. Ask one of
+      the admins below if you need something changed here.</span></p>
+  <ul class="list" style="margin-top:16px">
+    {% for a in admins %}
+    <li>{{ icon("shield", 18) }} <strong>{{ a.name }}</strong>
+      {% if a.user_id in roots %}<span class="pill pill-hr">ROOT</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+
+{% else %}
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Admins</h2>
+    <span class="dim">{{ admins|length }} of {{ admins|length + candidates|length }} signed-in accounts</span>
+  </div>
+  <ul class="list">
+    {% for a in admins %}
+    <li>
+      {{ icon("shield", 18) }} <strong>{{ a.name }}</strong>
+      {% if a.user_id in roots %}
+      <span class="pill pill-hr" title="Set in the server config; cannot be removed here">ROOT</span>
+      {% endif %}
+      <code class="uid">{{ a.user_id }}</code>
+      <span class="dim" style="margin-left:auto">
+        {% if a.added_by %}added by {{ a.added_by }}{% if a.added_at %} · {{ fmt_ago(a.added_at) }}{% endif %}
+        {% else %}from the server config{% endif %}
+      </span>
+      {% if a.user_id not in roots %}
+      <form method="post" action="/admin/admins" style="display:inline"
+            onsubmit="return confirm('Remove {{ a.name }} as an admin?')">
+        <input type="hidden" name="remove" value="{{ a.user_id }}">
+        <button class="btn-sm btn-danger" type="submit">Remove</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+
+  <h3 style="margin-top:24px">Appoint someone</h3>
+  {% if candidates %}
+  <form method="post" action="/admin/admins" class="row-form">
+    <label class="grow" style="margin:0">
+      <select name="user_id" required>
+        <option value="">Pick a moderator…</option>
+        {% for u in candidates %}
+        <option value="{{ u.user_id }}">{{ u.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="btn-primary" type="submit">Make admin</button>
+  </form>
+  <p class="dim" style="margin-top:8px">Only accounts that have signed in here
+    appear — the tool has to have seen the account before it can hand it
+    anything. Everyone in the list is already a moderator, because signing in
+    at all requires the staff group.</p>
+  {% else %}
+  <p class="dim">Everyone who has signed in is already an admin.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Roster agents</h2>
+    <span class="dim">{{ keys|length }} paired</span>
+  </div>
+  {% if keys %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Moderator</th><th>PC</th><th>Paired</th><th>Last reported</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for k in keys %}
+        <tr>
+          <td><a href="/player/{{ k.user_id }}">{{ k.user_name }}</a></td>
+          <td>{{ k.label }}</td>
+          <td class="nowrap dim">{{ fmt_ago(k.created_at) }}</td>
+          <td class="nowrap {{ 'dim' if k.last_used else '' }}">
+            {% if k.last_used %}{{ fmt_ago(k.last_used) }}
+            {% else %}<span class="pill pill-mut">never</span>{% endif %}</td>
+          <td class="num">
+            <form method="post" action="/settings/key/{{ k.id }}/revoke"
+                  onsubmit="return confirm('Revoke {{ k.user_name }}’s agent on {{ k.label }}? It stops reporting within 30 seconds.')">
+              <input type="hidden" name="next" value="/admin">
+              <button class="btn-sm btn-danger" type="submit">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="dim">Nobody has paired an agent yet. They come from
+    <a href="/settings">Your settings</a> → download the agent → run it.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>What admins can do</h2>
+  <ul class="list">
+    <li>{{ icon("group", 18) }} Appoint and remove other admins</li>
+    <li>{{ icon("block", 18) }} Revoke anybody's roster agent</li>
+    <li>{{ icon("flag", 18) }} Edit a kick, warn or ban log — the correction is
+      recorded on the log itself, not hidden</li>
+    <li>{{ icon("delete", 18) }} Delete a log outright, which nobody else can
+      do any more</li>
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

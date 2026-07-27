@@ -29,12 +29,19 @@ from paths import SHOTS_DIR
 from webapp import config as webconfig
 from webapp import discord
 from webapp.audit import AuditWatcher
-from webapp.auth import AuthError, SessionManager, staff_groups
+from webapp.auth import AuthError, SessionManager, staff_groups, token_hash
 from webapp.roster import LOCAL_CLIENT, LocalRosterPublisher
 
 SESSION_COOKIE = "modsession"
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+#: How long an agent's pairing code stays good. Long enough to alt-tab, find
+#: the browser and sign in; short enough that an abandoned code on somebody's
+#: screen is not a standing invitation.
+PAIR_TTL = 600.0
+#: Deliberately missing I, O, 0 and 1 — this gets read off one screen and typed
+#: into another, sometimes over voice chat.
+_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 class LoginRequired(Exception):
@@ -100,6 +107,17 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             raise LoginRequired()
         return sess
 
+    def is_admin(user_id: str) -> bool:
+        """Admin on top of being a moderator, not instead of it.
+
+        Root admins come from the config so the table can never lock everyone
+        out — remove yourself from the list and you are still in.
+        """
+        if not user_id:
+            return False
+        roots = {str(r).strip() for r in (cfg.get("root_admins") or [])}
+        return user_id in roots or database.is_admin(user_id)
+
     def page(request: Request, name: str, **ctx) -> HTMLResponse:
         sess = ctx.pop("session", None)
         return templates.TemplateResponse(request, name, {
@@ -119,6 +137,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                 f"?{request.url.query}" if request.url.query else ""),
             "my_role": (database.all_staff().get(sess["user_id"], {}).get("role")
                         if sess else None),
+            # Drives the Admin nav item and every admin-only control.
+            "am_admin": is_admin(sess["user_id"]) if sess else False,
             # Drives the "you kicked someone — why?" prompt on every page.
             "my_pending": (database.pending_actions(sess["user_id"])
                            if sess else []),
@@ -247,11 +267,48 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             database.upsert_incident(inc)
         return RedirectResponse(f"/incidents/{inc_id}", status_code=303)
 
+    @app.post("/incidents/{inc_id}/edit")
+    def incident_edit(request: Request, inc_id: str, action: str = Form(""),
+                      reason: str = Form(""), names: list[str] = Form(default=[]),
+                      user_ids: list[str] = Form(default=[])):
+        """Correct a kick/warn/ban log. Admins only.
+
+        A log is evidence, so the correction is recorded rather than quietly
+        applied: the transcript keeps what it said before and who changed it.
+        """
+        sess = require(request)
+        inc = database.get_incident(inc_id)
+        if not is_admin(sess["user_id"]) or not inc or inc["deleted"]:
+            return RedirectResponse(f"/incidents/{inc_id}", status_code=303)
+
+        action = (action or "Kick").strip()
+        reason = (reason or "").strip()
+        # Same shape as the Kick Log form, so a corrected log is indexed and
+        # searched exactly like one filed correctly first time.
+        targets = []
+        for name, uid in zip(names, list(user_ids) + [""] * len(names)):
+            name, uid = name.strip(), _user_id_from(uid)
+            if name or uid:
+                targets.append({"name": name or uid, "user_id": uid})
+        was = inc["trigger"]
+        inc["trigger"] = f"{action} — {reason}"[:160]
+        inc["transcript"] = list(inc["transcript"]) + [
+            f"Reason: {reason}",
+            f"Edited by {sess['name']} — was “{was}”"]
+        if targets:
+            inc["players"] = targets
+        database.upsert_incident(inc)
+        return RedirectResponse(f"/incidents/{inc_id}", status_code=303)
+
     @app.post("/incidents/{inc_id}/delete")
     def incident_delete(request: Request, inc_id: str):
-        require(request)
-        database.delete_incident(inc_id)
-        return RedirectResponse("/incidents", status_code=303)
+        # Deleting a record about a real moderation action is an admin call —
+        # everyone else can dismiss it, which keeps the history.
+        sess = require(request)
+        if is_admin(sess["user_id"]):
+            database.delete_incident(inc_id)
+            return RedirectResponse("/incidents", status_code=303)
+        return RedirectResponse(f"/incidents/{inc_id}", status_code=303)
 
     # ---------------- age checks ----------------
     @app.get("/age-checks", response_class=HTMLResponse)
@@ -612,25 +669,29 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     def settings(request: Request):
         sess = require(request)
         return page(request, "settings.html", session=sess,
-                    my_key=database.user_key(sess["user_id"]),
+                    my_keys=database.agent_keys(sess["user_id"]),
                     agent_exe=_agent_exe(cfg),
                     base_url=_public_base(request, cfg))
 
     @app.post("/settings/key")
-    def settings_key(request: Request, action: str = Form("new")):
-        """Mint, replace or revoke this moderator's roster key.
-
-        Replacing *is* the revoke path: there is one row per moderator, so an
-        agent still holding the old value starts failing on its next heartbeat
-        rather than keeping a second working key alive.
-        """
+    def settings_key(request: Request, label: str = Form("")):
+        """Mint a key by hand, for setting an agent up without pairing."""
         sess = require(request)
-        if action == "revoke":
-            database.clear_user_key(sess["user_id"])
-        else:
-            database.set_user_key(sess["user_id"], sess["name"],
-                                  secrets.token_urlsafe(24))
+        database.add_agent_key(sess["user_id"], sess["name"],
+                               label or "Added by hand",
+                               secrets.token_urlsafe(24))
         return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/key/{key_id}/revoke")
+    def settings_key_revoke(request: Request, key_id: str,
+                            next: str = Form("/settings")):
+        """Revoke one agent. Yours always; anybody's if you are an admin."""
+        sess = require(request)
+        row = database.agent_key(key_id)
+        if row and (row["user_id"] == sess["user_id"]
+                    or is_admin(sess["user_id"])):
+            database.revoke_agent_key(key_id)
+        return RedirectResponse(_safe_next(next, "/settings"), status_code=303)
 
     @app.get("/settings/agent")
     def settings_agent(request: Request):
@@ -646,6 +707,132 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                 status_code=404)
         return FileResponse(exe, filename=exe.name,
                             media_type="application/octet-stream")
+
+    # ---------------- admin ----------------
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin_page(request: Request):
+        sess = require(request)
+        roots = {str(r).strip() for r in (cfg.get("root_admins") or [])}
+        admins = database.all_admins()
+        listed = {a["user_id"] for a in admins}
+        # Root admins are in whether or not anybody wrote them down.
+        for uid in roots - listed:
+            known = {u["user_id"]: u["name"] for u in database.known_users()}
+            admins.insert(0, {"user_id": uid, "name": known.get(uid, uid),
+                              "added_by": "", "added_at": 0})
+        return page(
+            request, "admin.html", session=sess, admins=admins, roots=roots,
+            am_admin_page=is_admin(sess["user_id"]),
+            # Only people who have actually signed in can be appointed: the
+            # tool has to have seen the account to know its id is real.
+            candidates=[u for u in database.known_users()
+                        if u["user_id"] not in {a["user_id"] for a in admins}],
+            keys=database.agent_keys())
+
+    @app.post("/admin/admins")
+    def admin_admins(request: Request, user_id: str = Form(""),
+                     remove: str = Form("")):
+        sess = require(request)
+        if not is_admin(sess["user_id"]):
+            return RedirectResponse("/admin", status_code=303)
+        roots = {str(r).strip() for r in (cfg.get("root_admins") or [])}
+        if remove:
+            if remove not in roots:        # a root admin cannot be removed
+                database.remove_admin(remove)
+        elif user_id:
+            known = {u["user_id"]: u["name"] for u in database.known_users()}
+            if user_id in known:           # never appoint an id we've not seen
+                database.add_admin(user_id, known[user_id], sess["name"])
+        return RedirectResponse("/admin", status_code=303)
+
+    # ---------------- agent pairing ----------------
+    # The agent asks for a code, shows it with a link, and polls. A moderator
+    # opens the link in the panel and approves, and only then does the key
+    # travel — server to agent, over the same connection the roster will use.
+    # Nobody has to read a key off a screen or paste one into a chat.
+    pair_hits: dict[str, list[float]] = {}
+
+    @app.post("/api/agent/pair/start")
+    def pair_start(request: Request, payload: dict = Body(default={})):
+        # Unauthenticated by necessity — the agent has no credential yet, which
+        # is the whole point — so it is rate limited per IP and the rows it
+        # creates are worthless until a moderator approves one.
+        ip = _client_ip(request)
+        now = time.time()
+        hits = [t for t in pair_hits.get(ip, []) if now - t < 300]
+        if len(hits) >= 10:
+            raise _ApiError(429, "too many pairing attempts; wait a few minutes")
+        hits.append(now)
+        pair_hits[ip] = hits
+
+        code = _pair_code()
+        secret = secrets.token_urlsafe(32)
+        database.create_pairing(code, token_hash(secret),
+                                payload.get("client_name", ""), PAIR_TTL)
+        return {"code": code, "secret": secret,
+                "url": f"{_public_base(request, cfg)}/pair/{code}",
+                "expires_in": PAIR_TTL}
+
+    @app.post("/api/agent/pair/poll")
+    def pair_poll(payload: dict = Body(...)):
+        code = (payload.get("code") or "").strip().upper()
+        secret = payload.get("secret") or ""
+        row = database.get_pairing(code)
+        # Same answer for a wrong code and a wrong secret: a guessed code
+        # should not confirm itself.
+        if not row or not secret or not secrets.compare_digest(
+                token_hash(secret), row["secret_hash"] or ""):
+            raise _ApiError(404, "no such pairing")
+        if row["denied_at"]:
+            raise _ApiError(410, "that request was declined in the panel")
+        if row["claimed_at"]:
+            raise _ApiError(410, "that code has already been used")
+        if row["expires_at"] < time.time():
+            raise _ApiError(410, "that code expired — start again")
+        if not row["approved_at"]:
+            return {"status": "pending"}
+        # Minted here rather than on approval, so a link opened and then
+        # abandoned leaves no key behind for its owner to wonder about.
+        key = database.add_agent_key(row["user_id"], row["user_name"],
+                                     row["client_name"],
+                                     secrets.token_urlsafe(24))
+        database.claim_pairing(code)
+        return {"status": "approved", "token": key["roster_key"],
+                "name": row["user_name"]}
+
+    @app.get("/pair/{code}", response_class=HTMLResponse)
+    def pair_page(request: Request, code: str):
+        """Opening the link *is* the approval, provided you are signed in.
+
+        A pairing is worth nothing without the secret the agent kept, so the
+        thing this authorises is "the PC that just showed me this code reports
+        as me" — and the page it lands on can revoke it in one click.
+        """
+        sess = require(request)
+        code = code.strip().upper()
+        row = database.get_pairing(code)
+        if row and not (row["approved_at"] or row["denied_at"]
+                        or row["claimed_at"]) \
+                and row["expires_at"] >= time.time():
+            database.settle_pairing(code, user_id=sess["user_id"],
+                                    user_name=sess["name"])
+            row = database.get_pairing(code)
+        return page(request, "pair.html", session=sess, code=code,
+                    pairing=row, now=time.time())
+
+    @app.post("/pair/{code}")
+    def pair_deny(request: Request, code: str):
+        """Undo: mark it declined, and pull the key if one was already taken."""
+        sess = require(request)
+        code = code.strip().upper()
+        row = database.get_pairing(code)
+        if row and row["user_id"] in ("", None, sess["user_id"]):
+            database.settle_pairing(code, denied=True)
+            for k in database.agent_keys(sess["user_id"]):
+                if k["label"] == (row["client_name"] or "") \
+                        and k["created_at"] >= (row["approved_at"] or 0):
+                    database.revoke_agent_key(k["id"])
+        return RedirectResponse(f"/pair/{code}", status_code=303)
 
     # ---------------- media ----------------
     @app.get("/media/{kind}/{inc_id}")
@@ -682,9 +869,9 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         if token and any(secrets.compare_digest(token, t) for t in accepted):
             return None
         if allow_roster and token:
-            owner = database.user_by_key(token)
+            owner = database.agent_key_by_secret(token)
             if owner:
-                database.touch_user_key(token)
+                database.touch_agent_key(token)
                 return owner
         raise _ApiError(401, "bad sync token")
 
@@ -727,10 +914,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     def sync_roster(payload: dict = Body(...),
                     x_sync_token: str | None = Header(None)):
         owner = require_token(x_sync_token, allow_roster=True)
-        # A personal key names the moderator who is in the instance, which is
+        # A paired key names the moderator who is in the instance, which is
         # what Screening should show — the agent otherwise reports a PC's
         # hostname, and "DESKTOP-4F9K2" says nothing about who to ask.
-        name = owner["name"] if owner else payload.get("client_name", "")
+        name = owner["user_name"] if owner else payload.get("client_name", "")
         database.upsert_roster(payload.get("client_id", "default"),
                                payload.get("roster", {}), name)
         return {"ok": True}
@@ -762,6 +949,11 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
 
 # ---------------- helpers ----------------
+def _pair_code() -> str:
+    raw = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(8))
+    return f"{raw[:4]}-{raw[4:]}"
+
+
 def _agent_exe(cfg: dict) -> Path | None:
     """The packaged roster agent, if this server has one to hand out.
 

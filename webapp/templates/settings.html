@@ -3,8 +3,7 @@
 {% block content %}
 <div>
   <h1>Your settings</h1>
-  <p class="lead">Your account, and the roster agent that makes Screening work
-    while you are in the instance.</p>
+  <p class="lead">Your account, and the roster agents reporting as you.</p>
 </div>
 
 <section class="card">
@@ -14,6 +13,7 @@
       <span class="pill {{ 'pill-hr' if my_role == 'HR' else 'pill-mod' }}"
             title="{{ 'Listed as ' ~ my_role ~ ' on the moderator allowlist. ' if my_role }}Access comes from your staff group">
         {{ icon("shield", 13) }} {{ (my_role or "MOD")|upper }}</span>
+      {% if am_admin %}<span class="pill pill-hr">ADMIN</span>{% endif %}
       <span class="uid" style="margin-left:auto">{{ session.user_id }}</span></li>
     <li>{{ icon("group", 18) }} Signed in via
       <strong>{{ session.groups|join(", ") }}</strong></li>
@@ -31,8 +31,16 @@
   <p class="dim">VRChat's API will say an instance holds 48 people but never who
     they are — the names exist only in the log of a client that is in the world.
     This server is not in the world, so Screening stays empty unless somebody
-    who is there runs the agent. It reads the log and posts the roster; no
-    audio, no clipping, nothing else.</p>
+    who is there runs the agent.</p>
+
+  <ol class="list" style="margin-top:16px">
+    <li><strong>1.</strong> Download it and run it on your gaming PC.</li>
+    <li><strong>2.</strong> It shows a link. Open that link in this browser.</li>
+    <li><strong>3.</strong> That's it — it starts reporting as you.</li>
+  </ol>
+  <p class="dim">Your key is handed over machine to machine when you open the
+    link, so it never appears on screen for somebody to photograph, and never
+    has to be pasted into a chat.</p>
 
   {% if agent_exe %}
   <p style="margin-top:16px">
@@ -41,102 +49,82 @@
       {{ icon("download", 16) }} Download VRChatRosterAgent.exe</a>
   </p>
   <p class="dim">Windows warns on first run because the build is unsigned —
-    <em>More info</em> then <em>Run anyway</em>. It remembers its settings next
-    to itself, so afterwards you just double-click it.</p>
+    <em>More info</em> then <em>Run anyway</em>.</p>
   {% else %}
   <p class="banner banner-warn" style="margin-top:16px">{{ icon("warning", 18) }}
     <span>No build on this server yet. Run
-      <code>python build_agent.py --server {{ base_url }} --token …</code>
-      and point <code>agent_exe</code> at the result, or run the agent from a
-      checkout with the command below.</span></p>
-  {% endif %}
-
-  <h3 style="margin-top:24px">Point it at this server</h3>
-  {% if my_key %}
-  <pre class="mono" id="agent-cmd">VRChatRosterAgent.exe --server {{ base_url }} --token {{ my_key.roster_key }}</pre>
-  <p class="dim">From a checkout instead:
-    <code>python agent.py --server {{ base_url }} --token …</code></p>
-  {% else %}
-  <p class="dim">Generate a key below first — the agent needs one to report.</p>
+      <code>python build_agent.py --server {{ base_url }}</code> and point
+      <code>agent_exe</code> at the result, or run
+      <code>python agent.py --server {{ base_url }}</code> from a checkout —
+      it pairs the same way.</span></p>
   {% endif %}
 </section>
 
 <section class="card">
   <div class="card-head">
-    <h2 style="margin:0">Your personal key</h2>
-    <span class="dim">only you see this</span>
+    <h2 style="margin:0">Your agents</h2>
+    <span class="dim">only you and admins see these</span>
   </div>
-  <p class="dim">Yours alone, and it can do exactly one thing: report who is in
-    an instance. It cannot read incidents or age checks, so a key that leaks off
-    a shared PC costs you a bogus roster, not the records.</p>
 
-  {% if my_key %}
-  <div class="row-form" style="margin-top:16px">
-    <input id="pkey" class="grow" type="password" readonly
-           value="{{ my_key.roster_key }}" style="font-family: Consolas, ui-monospace, monospace">
-    <button type="button" id="pkey-show">Show</button>
-    <button type="button" id="pkey-copy">Copy</button>
+  {% if my_keys %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>PC</th><th>Paired</th><th>Last reported</th><th>Key</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for k in my_keys %}
+        <tr>
+          <td><strong>{{ k.label }}</strong></td>
+          <td class="nowrap dim">{{ fmt_ago(k.created_at) }}</td>
+          <td class="nowrap">
+            {% if k.last_used %}{{ fmt_ago(k.last_used) }}
+            {% else %}<span class="pill pill-mut">never</span>{% endif %}</td>
+          <td>
+            <input class="pkey" type="password" readonly value="{{ k.roster_key }}"
+                   style="width:150px; font-family: Consolas, ui-monospace, monospace">
+            <button type="button" class="btn-sm pkey-show">Show</button>
+          </td>
+          <td class="num">
+            <form method="post" action="/settings/key/{{ k.id }}/revoke"
+                  onsubmit="return confirm('Revoke the agent on {{ k.label }}? It stops reporting within 30 seconds.')">
+              <button class="btn-sm btn-danger" type="submit">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
-  <p class="dim" style="margin-top:8px">
-    Created {{ fmt_ago(my_key.created_at) }}.
-    {% if my_key.last_used %}
-      Last reported a roster {{ fmt_ago(my_key.last_used) }}.
-    {% else %}
-      Never used yet — it starts working the moment an agent posts with it.
-    {% endif %}
-  </p>
-  <div class="row-form" style="margin-top:16px">
-    <form method="post" action="/settings/key">
-      <input type="hidden" name="action" value="new">
-      <button type="submit"
-              title="Replaces the current key — any agent still using the old one stops reporting">
-        Regenerate</button>
-    </form>
-    <form method="post" action="/settings/key">
-      <input type="hidden" name="action" value="revoke">
-      <button class="btn-danger" type="submit"
-              title="Deletes the key; the agent stops reporting within 30 seconds">
-        Revoke</button>
-    </form>
-  </div>
-  <p class="dim" style="margin-top:8px">Both replace what any agent of yours is
-    already using, so re-paste the new one wherever you run it.</p>
+  <p class="dim" style="margin-top:12px">One key per PC, so revoking your laptop
+    leaves your desktop reporting. A key can report who is in an instance and
+    nothing else — it cannot read incidents or age checks.</p>
   {% else %}
-  <form method="post" action="/settings/key" style="margin-top:16px">
-    <input type="hidden" name="action" value="new">
-    <button class="btn-primary" type="submit">Generate a key</button>
-  </form>
+  <p class="dim">None yet. Run the agent and open the link it gives you; it
+    appears here the moment it collects its key.</p>
   {% endif %}
+
+  <details style="margin-top:16px">
+    <summary class="dim" style="cursor:pointer">Set one up by hand instead</summary>
+    <p class="dim" style="margin-top:12px">For a PC you cannot open a browser
+      on. You will have to copy the key across yourself, which is the part
+      pairing exists to avoid — prefer the link.</p>
+    <form method="post" action="/settings/key" class="row-form">
+      <input name="label" class="grow" maxlength="60" placeholder="Which PC is it?">
+      <button type="submit">Create a key</button>
+    </form>
+  </details>
 </section>
 
 <script>
-(function () {
-  var box = document.getElementById("pkey");
-  if (!box) return;
-
-  document.getElementById("pkey-show").addEventListener("click", function () {
+document.querySelectorAll(".pkey-show").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var box = btn.parentElement.querySelector(".pkey");
     var hidden = box.type === "password";
     box.type = hidden ? "text" : "password";
-    this.textContent = hidden ? "Hide" : "Show";
+    btn.textContent = hidden ? "Hide" : "Show";
+    if (hidden) box.select();
   });
-
-  document.getElementById("pkey-copy").addEventListener("click", function () {
-    var btn = this;
-    // navigator.clipboard needs a secure context, which plain http on the LAN
-    // is not, so fall back to selecting the field for a manual copy.
-    var done = function (ok) {
-      btn.textContent = ok ? "Copied" : "Select + Ctrl-C";
-      setTimeout(function () { btn.textContent = "Copy"; }, 2000);
-    };
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(box.value).then(
-        function () { done(true); }, function () { done(false); });
-    } else {
-      box.type = "text";
-      box.select();
-      done(false);
-    }
-  });
-})();
+});
 </script>
 {% endblock %}

@@ -157,21 +157,68 @@ CREATE TABLE IF NOT EXISTS user_reasons (
     PRIMARY KEY (user_id, reason)
 );
 
--- One roster key per moderator, minted from their settings page and pasted
--- into the roster agent. It is accepted on /api/sync/roster and nothing else,
--- so a key that leaks costs a bogus roster rather than the records — the same
--- reasoning as the shared roster_token, except this one names its owner and
--- they can replace it themselves.
+-- One row per paired agent, not per moderator: somebody running it on a
+-- desktop and a laptop gets two, so either can be revoked without stopping the
+-- other. The key is accepted on /api/sync/roster and nothing else, so one that
+-- leaks costs a bogus roster rather than the records.
 --
--- Kept in the clear rather than hashed: the moderator has to be able to read it
--- back off the page when they set the agent up on a second PC, and it grants
--- strictly less than the session cookie sitting in their browser already.
-CREATE TABLE IF NOT EXISTS user_keys (
-    user_id    TEXT PRIMARY KEY,
-    name       TEXT,
+-- Kept in the clear rather than hashed. Pairing means it normally never leaves
+-- the two machines, but a moderator setting one up by hand has to be able to
+-- read it back, and it grants strictly less than the session cookie already
+-- sitting in their browser.
+CREATE TABLE IF NOT EXISTS agent_keys (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT,
+    user_name  TEXT,
+    label      TEXT,        -- the PC it was paired from
     roster_key TEXT UNIQUE,
     created_at REAL,
     last_used  REAL
+);
+CREATE INDEX IF NOT EXISTS ix_agent_keys_user ON agent_keys(user_id);
+
+-- Everyone who has ever signed in. web_sessions is not this list: expired rows
+-- are purged, and appointing an admin should not depend on whether they
+-- happen to have a session open right now.
+CREATE TABLE IF NOT EXISTS known_users (
+    user_id    TEXT PRIMARY KEY,
+    name       TEXT,
+    first_seen REAL,
+    last_seen  REAL
+);
+
+-- Who can administer this tool: appoint other admins, revoke anybody's agent,
+-- and edit or delete a kick/warn/ban log. Being a moderator is still just
+-- staff-group membership; this is a second, smaller list on top of it.
+--
+-- The root admins in web_config.json are always in, whatever this table says,
+-- so the last admin cannot lock everybody out by removing themselves.
+CREATE TABLE IF NOT EXISTS admins (
+    user_id  TEXT PRIMARY KEY,
+    name     TEXT,
+    added_by TEXT,
+    added_at REAL
+);
+
+-- A roster agent waiting to be let in. The agent starts one on first launch,
+-- shows a short code and a link, and polls; a signed-in moderator opens the
+-- link and approves, which is what hands over their key.
+--
+-- The point is that the key is never on screen, in a chat message or in a
+-- screenshot — the human only ever handles the code, which is useless on its
+-- own: approving it needs a staff session, and collecting the key needs the
+-- secret that only the agent holds. Rows are short-lived and single-use.
+CREATE TABLE IF NOT EXISTS agent_pairings (
+    code        TEXT PRIMARY KEY,   -- short and human-readable, e.g. K7QP-4M2X
+    secret_hash TEXT,               -- sha256 of the agent's poll secret
+    client_name TEXT,               -- hostname, so the page names the PC
+    created_at  REAL,
+    expires_at  REAL,
+    user_id     TEXT,               -- who approved it
+    user_name   TEXT,
+    approved_at REAL,
+    denied_at   REAL,
+    claimed_at  REAL                -- when the agent collected the key
 );
 
 -- Sync cursors, one row per peer ("server" on a desktop client).
@@ -645,38 +692,129 @@ class Database:
         self._exec("DELETE FROM user_reasons WHERE user_id=? AND reason=?",
                    (user_id, reason))
 
-    # ---------------- personal roster keys ----------------
-    def user_key(self, user_id: str) -> dict | None:
-        row = self._one("SELECT * FROM user_keys WHERE user_id=?", (user_id,))
+    # ---------------- agent keys ----------------
+    def add_agent_key(self, user_id: str, user_name: str, label: str,
+                      key: str) -> dict:
+        row = {"id": new_id(), "user_id": user_id, "user_name": user_name or "",
+               "label": (label or "").strip()[:60] or "an unnamed PC",
+               "roster_key": key, "created_at": time.time(), "last_used": 0.0}
+        self._exec(
+            "INSERT INTO agent_keys (id, user_id, user_name, label, "
+            "roster_key, created_at, last_used) VALUES (?,?,?,?,?,?,?)",
+            tuple(row[c] for c in ("id", "user_id", "user_name", "label",
+                                   "roster_key", "created_at", "last_used")))
+        return row
+
+    def agent_keys(self, user_id: str = "") -> list[dict]:
+        """One moderator's paired agents, or everybody's when user_id is ''."""
+        if user_id:
+            rows = self._query(
+                "SELECT * FROM agent_keys WHERE user_id=? ORDER BY created_at",
+                (user_id,))
+        else:
+            rows = self._query("SELECT * FROM agent_keys "
+                               "ORDER BY user_name, created_at")
+        return [dict(r) for r in rows]
+
+    def agent_key(self, key_id: str) -> dict | None:
+        row = self._one("SELECT * FROM agent_keys WHERE id=?", (key_id,))
         return dict(row) if row else None
 
-    def set_user_key(self, user_id: str, name: str, key: str) -> None:
-        """Mint or replace a moderator's roster key.
-
-        Replacing is how a key is revoked, so the old value has to stop working
-        in the same write — hence one row per user rather than a history.
-        """
-        self._exec(
-            "INSERT INTO user_keys (user_id, name, roster_key, created_at, "
-            "last_used) VALUES (?,?,?,?,0) "
-            "ON CONFLICT(user_id) DO UPDATE SET name=excluded.name, "
-            "roster_key=excluded.roster_key, created_at=excluded.created_at, "
-            "last_used=0",
-            (user_id, name or "", key, time.time()))
-
-    def clear_user_key(self, user_id: str) -> None:
-        self._exec("DELETE FROM user_keys WHERE user_id=?", (user_id,))
-
-    def user_by_key(self, key: str) -> dict | None:
+    def agent_key_by_secret(self, key: str) -> dict | None:
         if not key:
             return None
-        row = self._one("SELECT * FROM user_keys WHERE roster_key=?", (key,))
+        row = self._one("SELECT * FROM agent_keys WHERE roster_key=?", (key,))
         return dict(row) if row else None
 
-    def touch_user_key(self, key: str) -> None:
+    def revoke_agent_key(self, key_id: str) -> dict | None:
+        """Delete a key. Returns the row that went, for the message."""
+        row = self.agent_key(key_id)
+        if row:
+            self._exec("DELETE FROM agent_keys WHERE id=?", (key_id,))
+        return row
+
+    def touch_agent_key(self, key: str) -> None:
         """Record that a key just reported, so its owner can see it working."""
-        self._exec("UPDATE user_keys SET last_used=? WHERE roster_key=?",
+        self._exec("UPDATE agent_keys SET last_used=? WHERE roster_key=?",
                    (time.time(), key))
+
+    # ---------------- who has signed in ----------------
+    def note_known_user(self, user_id: str, name: str) -> None:
+        now = time.time()
+        self._exec(
+            "INSERT INTO known_users (user_id, name, first_seen, last_seen) "
+            "VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "name=excluded.name, last_seen=excluded.last_seen",
+            (user_id, name or "", now, now))
+
+    def known_users(self) -> list[dict]:
+        return [dict(r) for r in
+                self._query("SELECT * FROM known_users ORDER BY name")]
+
+    # ---------------- admins ----------------
+    def all_admins(self) -> list[dict]:
+        return [dict(r) for r in
+                self._query("SELECT * FROM admins ORDER BY added_at")]
+
+    def is_admin(self, user_id: str) -> bool:
+        return bool(user_id) and bool(
+            self._one("SELECT 1 FROM admins WHERE user_id=?", (user_id,)))
+
+    def add_admin(self, user_id: str, name: str, added_by: str) -> None:
+        self._exec(
+            "INSERT INTO admins (user_id, name, added_by, added_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "name=excluded.name",
+            (user_id, name or "", added_by, time.time()))
+
+    def remove_admin(self, user_id: str) -> None:
+        self._exec("DELETE FROM admins WHERE user_id=?", (user_id,))
+
+    # ---------------- agent pairing ----------------
+    def create_pairing(self, code: str, secret_hash: str, client_name: str,
+                       ttl: float) -> None:
+        now = time.time()
+        self.purge_expired_pairings()
+        self._exec(
+            "INSERT OR REPLACE INTO agent_pairings "
+            "(code, secret_hash, client_name, created_at, expires_at) "
+            "VALUES (?,?,?,?,?)",
+            (code, secret_hash, (client_name or "")[:60], now, now + ttl))
+
+    def get_pairing(self, code: str) -> dict | None:
+        row = self._one("SELECT * FROM agent_pairings WHERE code=?", (code,))
+        return dict(row) if row else None
+
+    def settle_pairing(self, code: str, *, user_id: str = "",
+                       user_name: str = "", denied: bool = False) -> None:
+        """Record a moderator's decision on a pending pairing."""
+        now = time.time()
+        if denied:
+            self._exec("UPDATE agent_pairings SET denied_at=? WHERE code=?",
+                       (now, code))
+            return
+        self._exec(
+            "UPDATE agent_pairings SET user_id=?, user_name=?, approved_at=? "
+            "WHERE code=?", (user_id, user_name, now, code))
+
+    def claim_pairing(self, code: str) -> None:
+        """Mark the key as collected, so the code cannot be replayed."""
+        self._exec("UPDATE agent_pairings SET claimed_at=? WHERE code=?",
+                   (time.time(), code))
+
+    def pending_pairings(self, user_id: str = "") -> list[dict]:
+        rows = self._query(
+            "SELECT * FROM agent_pairings WHERE expires_at > ? "
+            "AND approved_at IS NULL AND denied_at IS NULL "
+            "ORDER BY created_at DESC", (time.time(),))
+        return [dict(r) for r in rows]
+
+    def purge_expired_pairings(self) -> None:
+        # An hour past expiry, so a claimed row sticks around long enough for
+        # a retrying agent to be told "already used" rather than "never heard
+        # of it", which is a much more confusing thing to debug.
+        self._exec("DELETE FROM agent_pairings WHERE expires_at < ?",
+                   (time.time() - 3600,))
 
     # ---------------- staff roster ----------------
     def all_staff(self) -> dict:

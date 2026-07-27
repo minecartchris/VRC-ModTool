@@ -192,6 +192,9 @@ class SessionManager:
 
         token = secrets.token_urlsafe(32)
         ttl = float(self.cfg.get("session_hours", 12)) * 3600
+        # Remembered beyond the session, so somebody can be made an admin
+        # months after their last sign-in rather than only while logged in.
+        self.db.note_known_user(uid, name)
         self.db.purge_expired_sessions()
         self.db.create_session(token_hash(token), uid, name, matched, ttl,
                                encrypt_cookies(token, api.s.cookies))

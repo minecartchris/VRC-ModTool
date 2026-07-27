@@ -22,7 +22,8 @@
                                ("/pending", "help", "Pending"),
                                ("/incidents", "flag", "Incidents"),
                                ("/age-checks", "verified", "Age Checks"),
-                               ("/screening", "group", "Screening")] %}
+                               ("/screening", "group", "Screening")]
+                              + ([("/admin", "settings", "Admin")] if am_admin else []) %}
       {% set active = (path == href) if href == "/" else path.startswith(href) %}
       <a class="nav {{ 'on' if active }}" href="{{ href }}">
         {{ icon(ico) }}<span class="t">{{ text }}</span>

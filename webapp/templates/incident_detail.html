@@ -102,14 +102,84 @@
         {{ icon("copy", 16) }} Copy report</button>
     </section>
 
+    {% if am_admin and inc.origin in ("web", "vrchat-audit", "teenchillout") %}
+    <section class="card">
+      <div class="card-head">
+        <h2 style="margin:0">Correct this log</h2>
+        <span class="pill pill-hr">ADMIN</span>
+      </div>
+      <p class="dim">The correction is recorded on the log — the transcript
+        keeps what it said before, and your name against the change.</p>
+      <form method="post" action="/incidents/{{ inc.id }}/edit" id="editlog">
+        <label style="margin-top:12px">Action
+          <select name="action">
+            {% for a in ["Kick", "Warn", "Ban"] %}
+            <option value="{{ a }}" {% if inc.trigger.startswith(a) %}selected{% endif %}>{{ a }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label style="margin-top:12px">Reason
+          <input name="reason" maxlength="140"
+                 value="{{ inc.trigger.split('—', 1)[1].strip() if '—' in inc.trigger else inc.trigger }}">
+        </label>
+        <h3 style="margin-top:16px">Players</h3>
+        <div id="edit-targets">
+          {% for p in inc.players %}
+          <div class="target-row">
+            <input name="names" value="{{ p.name }}" placeholder="Display name">
+            <input name="user_ids" value="{{ p.user_id }}" placeholder="usr_… (optional)">
+            <button type="button" class="drop" title="Remove">✕</button>
+          </div>
+          {% endfor %}
+          {% if not inc.players %}
+          <div class="target-row">
+            <input name="names" placeholder="Display name">
+            <input name="user_ids" placeholder="usr_… (optional)">
+            <button type="button" class="drop" title="Remove">✕</button>
+          </div>
+          {% endif %}
+        </div>
+        <button type="button" id="edit-add" class="btn-sm" style="margin-top:8px">
+          + Add another player</button>
+        <div style="margin-top:16px">
+          <button class="btn-primary" type="submit">Save correction</button>
+        </div>
+      </form>
+    </section>
+    {% endif %}
+
+    {% if am_admin %}
     <form method="post" action="/incidents/{{ inc.id }}/delete"
           onsubmit="return confirm('Delete this incident? It disappears from the desktop app too on the next sync.')">
       <button class="btn-danger" type="submit">{{ icon("delete", 16) }} Delete incident</button>
     </form>
+    {% else %}
+    <p class="dim">{{ icon("help", 14) }} Deleting a record is an admin action.
+      Set the status to <em>dismissed</em> above to take it off the active list
+      without losing it.</p>
+    {% endif %}
   </div>
 </div>
 
 <script>
+(function () {
+  var wrap = document.getElementById("edit-targets");
+  if (!wrap) return;
+  document.getElementById("edit-add").addEventListener("click", function () {
+    var row = wrap.firstElementChild.cloneNode(true);
+    row.querySelectorAll("input").forEach(function (i) { i.value = ""; });
+    wrap.appendChild(row);
+  });
+  wrap.addEventListener("click", function (e) {
+    if (!e.target.closest(".drop")) return;
+    var row = e.target.closest(".target-row");
+    // Keep one row, so a log can be emptied of players deliberately rather
+    // than by running out of inputs.
+    if (wrap.children.length > 1) row.remove();
+    else row.querySelectorAll("input").forEach(function (i) { i.value = ""; });
+  });
+})();
+
 document.querySelectorAll("button.copy").forEach(function (b) {
   b.addEventListener("click", function () {
     var el = document.getElementById(b.dataset.target);
