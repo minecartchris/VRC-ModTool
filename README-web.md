@@ -70,6 +70,22 @@ So the roster always comes from something running on a PC that is in the world:
 2. **The roster agent** (`agent.py`), for the normal hosted case. See below.
 3. **The desktop app**, which pushes its roster when sync is on.
 
+**Only instances the group owns.** VRChat writes the owning group into the
+instance id itself — `73644~group(grp_…)~groupAccessType(public)~region(us)` —
+so the server checks it against:
+
+```json
+"roster_group": "grp_…"
+```
+
+Usually the same group as `audit_group`. Rosters from anywhere else are
+discarded on arrival rather than stored and hidden: a moderator who steps into
+a private world, a friend's instance or another group's room is not on duty,
+and that roster has no business in a database of age checks. The agent is told
+why and says so once, so "why is my instance not showing" has an answer on
+screen. Empty accepts any instance, which is the right default for someone
+running this for a single world of their own.
+
 **One screening list per instance.** A paired agent reports the room its own PC
 is in, and rosters are grouped by `world_id:instance_id` — not by who sent
 them. Screening shows the room you are standing in, which is the one you need;

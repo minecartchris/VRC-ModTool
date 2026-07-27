@@ -191,7 +191,8 @@ def save_settings(cfg: dict) -> None:
         print(f"  (couldn't save {CONFIG_PATH.name}: {e})")
 
 
-def post_roster(session: requests.Session, cfg: dict, snap: dict) -> None:
+def post_roster(session: requests.Session, cfg: dict, snap: dict) -> str:
+    """Send one roster. Returns the server's reason for discarding it, if any."""
     r = session.post(
         f"{cfg['server']}/api/sync/roster",
         json={"client_id": cfg["client_id"], "client_name": cfg["name"],
@@ -207,6 +208,10 @@ def post_roster(session: requests.Session, cfg: dict, snap: dict) -> None:
     if r.status_code == 503:
         raise SystemExit("Server has the sync API disabled (no sync_token set).")
     r.raise_for_status()
+    try:
+        return r.json().get("ignored") or ""
+    except ValueError:
+        return ""
 
 
 def main() -> None:
@@ -242,6 +247,7 @@ def main() -> None:
     last_sent = 0.0
     complained = False
     waiting = True
+    said_ignored = ""          # instance we have already explained away
     # --once still has to wait for the watcher to parse the log; exiting on the
     # first empty snapshot would send nothing at all.
     deadline = time.time() + 30 if args.once else None
@@ -255,8 +261,17 @@ def main() -> None:
             # would overwrite a real roster from another reporter.
             if due and (snap["players"] or snap["world_id"]):
                 try:
-                    post_roster(session, cfg, snap)
-                    if snap["revision"] != last_revision or complained:
+                    ignored = post_roster(session, cfg, snap)
+                    if ignored and snap["instance_id"] != said_ignored:
+                        # Said once per instance, not every heartbeat: this is
+                        # normal when a moderator steps into a private world.
+                        said_ignored = snap["instance_id"]
+                        print(f"  [{time.strftime('%H:%M:%S')}] "
+                              f"{snap['world_name'] or 'this world'} - "
+                              f"{ignored}")
+                    elif not ignored and (snap["revision"] != last_revision
+                                          or complained):
+                        said_ignored = ""
                         print(f"  [{time.strftime('%H:%M:%S')}] "
                               f"{snap['world_name'] or 'unknown world'} - "
                               f"{len(snap['players'])} players")

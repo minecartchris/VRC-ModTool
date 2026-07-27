@@ -30,9 +30,13 @@ HEARTBEAT = 30.0
 
 
 class LocalRosterPublisher:
-    def __init__(self, database, interval: float = 3.0):
+    def __init__(self, database, interval: float = 3.0, allow=None):
         self.db = database
         self.interval = interval
+        #: Optional gate on the snapshot — a hosted deployment only wants
+        #: instances its own group owns, not whatever world this PC wandered
+        #: into. Called with the snapshot; falsey means don't publish.
+        self.allow = allow
         self.watcher = vrc_log.VRCLogWatcher()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -76,7 +80,10 @@ class LocalRosterPublisher:
                 # reporter legitimately pushed.
                 due = (snap["revision"] != self._last_revision
                        or time.time() - last_write >= HEARTBEAT)
-                if due and (snap["players"] or snap["world_id"]):
+                # Not `continue`: the wait at the bottom of the loop is what
+                # keeps this thread from spinning.
+                allowed = not self.allow or self.allow(snap)
+                if allowed and due and (snap["players"] or snap["world_id"]):
                     self._last_revision = snap["revision"]
                     last_write = time.time()
                     # Heartbeats keep this reporter ranked ahead of a remote

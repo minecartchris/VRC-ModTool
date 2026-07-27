@@ -63,7 +63,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     # whether or not the desktop app happens to be running.
     publisher = None
     if cfg.get("read_local_log", True) and LocalRosterPublisher.available():
-        publisher = LocalRosterPublisher(database)
+        publisher = LocalRosterPublisher(
+            database, allow=lambda snap: _roster_allowed(cfg, snap))
         publisher.start()
     app.state.roster = publisher
 
@@ -106,6 +107,16 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         if not sess:
             raise LoginRequired()
         return sess
+
+    def shown_rosters() -> list[dict]:
+        """Rosters this server is willing to display.
+
+        Ingest already refuses instances the group does not own, but rows
+        stored before the setting existed — or pushed by an older desktop
+        client — are filtered here too, so turning it on takes effect at once
+        rather than after every stale row has aged out.
+        """
+        return [r for r in database.all_rosters() if _roster_allowed(cfg, r)]
 
     def is_admin(user_id: str) -> bool:
         """Admin on top of being a moderator, not instead of it.
@@ -204,7 +215,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         sess = require(request)
         incidents = database.all_incidents()
         checks = database.all_age_checks()
-        rosters = database.all_rosters()
+        rosters = shown_rosters()
         day = time.time() - 86400
         stats = {
             "incidents": len(incidents),
@@ -331,7 +342,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                     if needle in f"{c['name']} {c['user_id']}".lower()]
         # The same instance Screening would show them, so the name suggestions
         # are the people they can actually see.
-        current, _ = _pick_instance(database.all_rosters(), sess["user_id"],
+        current, _ = _pick_instance(shown_rosters(), sess["user_id"],
                                     "", publisher)
         return page(request, "age_checks.html", session=sess, checks=rows,
                     verdict=verdict, q=q,
@@ -583,7 +594,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     def screening(request: Request, show: str = "", q: str = "",
                   instance: str = "", reporter: str = ""):
         sess = require(request)
-        rosters = database.all_rosters()
+        rosters = shown_rosters()
         current, choices = _pick_instance(rosters, sess["user_id"],
                                           instance or reporter, publisher)
         cached = database.all_users()
@@ -914,7 +925,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         for chk in payload.get("age_checks") or []:
             if chk.get("id") and database.upsert_age_check(chk):
                 applied["age_checks"] += 1
-        if payload.get("client_id") and payload.get("roster"):
+        if payload.get("client_id") and payload.get("roster") \
+                and _roster_allowed(cfg, payload["roster"]):
             database.upsert_roster(payload["client_id"], payload["roster"],
                                    payload.get("client_name", ""))
         return {"ok": True, "applied": applied, "server_time": time.time()}
@@ -937,13 +949,19 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     def sync_roster(payload: dict = Body(...),
                     x_sync_token: str | None = Header(None)):
         owner = require_token(x_sync_token, allow_roster=True)
+        roster = payload.get("roster", {})
+        # Dropped rather than stored and hidden: a moderator's private world is
+        # not this server's business to keep a copy of. 200 so the agent takes
+        # it as a normal answer and says so, rather than retrying an error.
+        if not _roster_allowed(cfg, roster):
+            return {"ok": True, "ignored": "not an instance this server "
+                                           "moderates — roster discarded"}
         # A paired key names the moderator who is in the instance, which is
         # what Screening should show — the agent otherwise reports a PC's
         # hostname, and "DESKTOP-4F9K2" says nothing about who to ask.
         name = owner["user_name"] if owner else payload.get("client_name", "")
-        database.upsert_roster(payload.get("client_id", "default"),
-                               payload.get("roster", {}), name,
-                               owner["user_id"] if owner else "")
+        database.upsert_roster(payload.get("client_id", "default"), roster,
+                               name, owner["user_id"] if owner else "")
         return {"ok": True}
 
     @app.post("/api/sync/staff")
@@ -979,6 +997,30 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
 
 # ---------------- helpers ----------------
+#: VRChat writes the owning group into the instance id itself, e.g.
+#: "73644~group(grp_7112…)~groupAccessType(public)~region(us)".
+_INSTANCE_GROUP = re.compile(r"~group\((grp_[0-9a-fA-F-]+)\)")
+
+
+def _instance_group(instance_id: str) -> str:
+    match = _INSTANCE_GROUP.search(instance_id or "")
+    return match.group(1) if match else ""
+
+
+def _roster_allowed(cfg: dict, roster: dict) -> bool:
+    """Whether this instance is one this server moderates.
+
+    A moderator sitting in a private world, a friend's instance or somebody
+    else's group is not on duty, and those rosters have no business on the
+    Screening page — that page is where age verdicts get recorded, against
+    people the group never invited.
+    """
+    want = (cfg.get("roster_group") or "").strip()
+    if not want:
+        return True
+    return _instance_group(roster.get("instance_id", "")) == want
+
+
 def _instance_key(roster: dict) -> str:
     """What counts as "the same room" across reporters.
 

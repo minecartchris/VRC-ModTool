@@ -74,6 +74,12 @@ DEFAULTS = {
     "media_roots": [],
     # Set True only behind HTTPS; marks the session cookie Secure.
     "https_only": False,
+    # Only accept rosters from instances this group owns, matched against the
+    # `~group(grp_…)` VRChat writes into the instance id. Empty accepts any.
+    # Normally the same group as `audit_group`: a moderator sitting in a
+    # private world or a friend's instance is not on duty, and that roster has
+    # no business on the Screening page.
+    "roster_group": "",
     # VRChat ids who are always admins, whatever the admins table says — the
     # backstop against the last admin removing themselves and locking the
     # tool's own administration out. Everyone else is appointed in the UI.
