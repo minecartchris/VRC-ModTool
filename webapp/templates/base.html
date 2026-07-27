@@ -5,7 +5,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Mod Suite{% endblock %}</title>
-  {% if state_version %}<meta name="state-version" content="{{ state_version }}">{% endif %}
+  {% if state_version %}<meta name="state-version" content="{{ state_version }}"
+        data-reporter="{{ roster_client|default('', true) }}">{% endif %}
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='%23c7bfff' d='M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5z'/></svg>">
 </head>

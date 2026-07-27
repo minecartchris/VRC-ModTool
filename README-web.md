@@ -70,9 +70,22 @@ So the roster always comes from something running on a PC that is in the world:
 2. **The roster agent** (`agent.py`), for the normal hosted case. See below.
 3. **The desktop app**, which pushes its roster when sync is on.
 
-Whichever reported most recently wins. Reporters heartbeat every 30s; a
-heartbeat updates liveness but deliberately does *not* count as a change, so
-open browsers don't reload twice a minute for nothing.
+**One instance per moderator.** A paired agent reports the room its own PC is
+in, so two moderators in two instances are two rosters and neither sees the
+other's players. Screening shows yours by default; the room you are standing in
+is the one you need, and mixing a colleague's into it is how somebody gets
+screened against a list they were never on.
+
+Where there is more than one live, a switcher across the top names each room and
+who is reporting it, so you can look into a colleague's instance deliberately.
+A moderator with no agent of their own — screening from a phone, say — is asked
+which room rather than handed an arbitrary one; if only one is live, that is not
+a choice worth asking about, so they simply get it.
+
+Reporters heartbeat every 30s; a heartbeat updates liveness but deliberately
+does *not* count as a change, so open browsers don't reload twice a minute for
+nothing. The reload poll is scoped to the instance on screen, so a join in a
+world you are not looking at leaves your page alone.
 
 If no reporter is current the Screening page says so in red rather than quietly
 showing an old list — screening against people who already left is worse than
@@ -240,7 +253,7 @@ python run_web.py --host 0.0.0.0
 | `incidents` | one row per trigger or manual filing; transcript, roster, world, clip/screenshot paths, status, notes |
 | `age_checks` | one row per verdict: player, over/under/in-range, reported age, who checked, which incident it filed |
 | `screening_users` | cached VRChat note + groups per user, so nobody is looked up twice |
-| `rosters` | last instance snapshot each desktop client reported |
+| `rosters` | one row per reporter: the instance that PC is in, and whose agent it is |
 | `web_sessions` | opaque session tokens; **no passwords, no VRChat cookies** |
 | `agent_keys` | one roster key per paired PC, revocable on its own |
 | `agent_pairings` | short-lived pairing codes, single-use |

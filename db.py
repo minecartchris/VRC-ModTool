@@ -243,6 +243,9 @@ _ADDED_COLUMNS = {
     },
     "rosters": {
         "seen_at": "REAL",
+        # Whose agent this is, when it reported with a paired key. Empty for
+        # the shared roster_token and for the server's own log reader.
+        "user_id": "TEXT",
     },
 }
 
@@ -493,7 +496,7 @@ class Database:
 
     # ---------------- rosters ----------------
     def upsert_roster(self, client_id: str, snap: dict,
-                      client_name: str = "") -> bool:
+                      client_name: str = "", user_id: str = "") -> bool:
         """Record a heartbeat from a reporter. True if the roster changed.
 
         Reporters heartbeat every ~30s to prove they are alive, so bumping
@@ -517,17 +520,19 @@ class Database:
         self._exec(
             """INSERT INTO rosters
                (client_id, client_name, world_name, world_id, instance_id,
-                players, updated_at, seen_at)
-               VALUES (?,?,?,?,?,?,?,?)
+                players, updated_at, seen_at, user_id)
+               VALUES (?,?,?,?,?,?,?,?,?)
                ON CONFLICT(client_id) DO UPDATE SET
                  client_name=excluded.client_name,
                  world_name=excluded.world_name, world_id=excluded.world_id,
                  instance_id=excluded.instance_id, players=excluded.players,
                  updated_at=CASE WHEN ? THEN excluded.updated_at
                                  ELSE rosters.updated_at END,
-                 seen_at=excluded.seen_at""",
+                 seen_at=excluded.seen_at,
+                 user_id=CASE WHEN excluded.user_id <> '' THEN excluded.user_id
+                              ELSE rosters.user_id END""",
             (client_id, client_name, world_name, world_id, instance_id,
-             players, now, now, 1 if changed else 0))
+             players, now, now, user_id or "", 1 if changed else 0))
         return changed
 
     def all_rosters(self) -> list[dict]:
@@ -541,6 +546,7 @@ class Database:
             "instance_id": r["instance_id"] or "",
             "players": json.loads(r["players"] or "[]"),
             "updated_at": r["updated_at"] or 0.0,
+            "user_id": r["user_id"] or "",
             "seen_at": r["seen_at"] or r["updated_at"] or 0.0} for r in rows]
 
     # ---------------- web sessions ----------------
@@ -841,21 +847,36 @@ class Database:
         return True
 
     # ---------------- change detection ----------------
-    def state_version(self) -> str:
+    def state_version(self, roster_client: str = "") -> str:
         """Cheap fingerprint of everything the web pages display.
 
         Polled by the browser every few seconds, so it must stay a handful of
         indexed MAX/COUNT lookups rather than reading any rows. Counts are in
         it too, so a hard delete changes the fingerprint even though it lowers
         no timestamp.
+
+        `roster_client` narrows the roster part to one reporter. Without it,
+        two moderators agenting different instances would reload each other's
+        Screening page on every join and leave in a world they cannot see.
         """
-        r = self._one("""
-            SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
-                   (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
-                   (SELECT COALESCE(MAX(updated_at), 0) FROM rosters)    AS r,
-                   (SELECT COUNT(*) FROM incidents)                      AS ic,
-                   (SELECT COUNT(*) FROM age_checks)                     AS ac""")
-        return (f"{r['i']:.3f}-{r['a']:.3f}-{r['r']:.3f}-{r['ic']}-{r['ac']}")
+        if roster_client:
+            r = self._one("""
+                SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
+                       (SELECT COALESCE(updated_at, 0) FROM rosters
+                         WHERE client_id=?)                                  AS r,
+                       (SELECT COUNT(*) FROM incidents)                      AS ic,
+                       (SELECT COUNT(*) FROM age_checks)                     AS ac""",
+                          (roster_client,))
+        else:
+            r = self._one("""
+                SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM rosters)    AS r,
+                       (SELECT COUNT(*) FROM incidents)                      AS ic,
+                       (SELECT COUNT(*) FROM age_checks)                     AS ac""")
+        return (f"{r['i']:.3f}-{r['a']:.3f}-{(r['r'] or 0):.3f}"
+                f"-{r['ic']}-{r['ac']}")
 
     # ---------------- sync cursors ----------------
     def sync_cursor(self, peer: str) -> dict:

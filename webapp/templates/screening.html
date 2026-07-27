@@ -9,9 +9,14 @@
     {%- if current.instance_id %} · instance #{{ short_instance(current.instance_id) }}{% endif %}
     · {{ counts.all }} present
     · {{ "read from this PC's VRChat log" if source_local
-         else "reported by " ~ (current.client_name or current.client_id) }}
+         else ("your instance" if mine
+               else "reported by " ~ (current.client_name or current.client_id)) }}
     · updated {{ fmt_ago(current.updated_at) }}
   </p>
+  {% elif choices %}
+  <p class="lead">You aren't running an agent, so there is no instance that is
+    yours. Pick whose to look at — each list is only the people in that
+    moderator's room.</p>
   {% else %}
   {% if local_reader %}
   <p class="lead">No instance to screen yet. Start VRChat and join a world —
@@ -25,6 +30,23 @@
   {% endif %}
   {% endif %}
 </div>
+
+{# Every instance being reported right now. One agent per moderator, so this is
+   also "who else is moderating somewhere at the moment". #}
+{% if choices|length > 1 or (choices and not current) %}
+<nav class="chips" aria-label="Which instance">
+  {% for r in choices %}
+  <a class="chip {{ 'on' if current and r.client_id == current.client_id }}"
+     href="/screening?reporter={{ r.client_id }}{% if show %}&show={{ show }}{% endif %}">
+    {{ icon("group", 14) }}
+    {{ r.client_name or r.client_id }}
+    {%- if r.user_id == session.user_id %} (you){% endif %} ·
+    {{ r.world_name or "unknown world" }}
+    <span class="chip-n">{{ r.players|length }}</span>
+  </a>
+  {% endfor %}
+</nav>
+{% endif %}
 
 {% if current and not live %}
 {# Screening against a roster of people who already left is worse than showing
@@ -47,7 +69,7 @@
                           ("under", "Under range"), ("over", "Over range")] %}
       {% if counts[key or "all"] or show == key or not key %}
       <a class="chip {{ 'on' if show == key }} c-{{ key or 'all' }}"
-         href="/screening{% if key %}?show={{ key }}{% endif %}">
+         href="/screening?{% if key %}show={{ key }}&{% endif %}{% if reporter %}reporter={{ reporter }}{% endif %}">
         {{ label }} <span class="chip-n">{{ counts[key or "all"] }}</span>
       </a>
       {% endif %}
@@ -56,6 +78,7 @@
 
   <form class="filters" method="get" action="/screening">
     {% if show %}<input type="hidden" name="show" value="{{ show }}">{% endif %}
+    {% if reporter %}<input type="hidden" name="reporter" value="{{ reporter }}">{% endif %}
     <div class="field" style="flex:1;min-width:220px">
       {{ icon("search") }}
       <input name="q" value="{{ q }}" placeholder="Search name or user ID…">

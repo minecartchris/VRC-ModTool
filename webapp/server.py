@@ -120,11 +120,15 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     def page(request: Request, name: str, **ctx) -> HTMLResponse:
         sess = ctx.pop("session", None)
+        # Pages showing one instance narrow the fingerprint to that reporter,
+        # so another moderator's instance filling up doesn't reload them.
+        roster_client = ctx.get("roster_client", "")
         return templates.TemplateResponse(request, name, {
             "session": sess, "cfg": cfg,
             # What the page was rendered from; the browser polls /api/state
             # and reloads when this moves. See static/refresh.js.
-            "state_version": database.state_version() if sess else "",
+            "state_version": (database.state_version(roster_client)
+                              if sess else ""),
             # Whether this server can see VRChat itself. False on a hosted
             # box, where the roster can only arrive from a client that is
             # actually in the instance.
@@ -212,11 +216,15 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             "checks_today": sum(1 for c in checks
                                 if (c["created_at"] or 0) > day),
         }
+        mine, live = _pick_roster(rosters, sess["user_id"], "", publisher)
         return page(request, "dashboard.html", session=sess, stats=stats,
                     recent_incidents=sorted(
                         incidents, key=lambda i: i["created_at"] or 0,
                         reverse=True)[:8],
-                    recent_checks=checks[:8], rosters=rosters)
+                    recent_checks=checks[:8],
+                    # Only instances someone is reporting *now*. A reporter
+                    # that went quiet days ago is history, not a room.
+                    rosters=live, my_client=mine["client_id"] if mine else "")
 
     # ---------------- incidents ----------------
     @app.get("/incidents", response_class=HTMLResponse)
@@ -321,12 +329,15 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             needle = q.lower()
             rows = [c for c in rows
                     if needle in f"{c['name']} {c['user_id']}".lower()]
-        rosters = database.all_rosters()
-        roster = rosters[0]["players"] if rosters else []
+        # The same instance Screening would show them, so the name suggestions
+        # are the people they can actually see.
+        current, _ = _pick_roster(database.all_rosters(), sess["user_id"], "",
+                                  publisher)
         return page(request, "age_checks.html", session=sess, checks=rows,
-                    verdict=verdict, q=q, roster=roster,
-                    current=rosters[0] if rosters else None,
-                    verdicts=agecheck.VERDICTS)
+                    verdict=verdict, q=q,
+                    roster=current["players"] if current else [],
+                    current=current, verdicts=agecheck.VERDICTS,
+                    roster_client=current["client_id"] if current else "")
 
     @app.post("/age-checks")
     def age_check_create(request: Request, name: str = Form(...),
@@ -569,10 +580,12 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     # ---------------- screening ----------------
     @app.get("/screening", response_class=HTMLResponse)
-    def screening(request: Request, show: str = "", q: str = ""):
+    def screening(request: Request, show: str = "", q: str = "",
+                  reporter: str = ""):
         sess = require(request)
         rosters = database.all_rosters()
-        current = rosters[0] if rosters else None
+        current, choices = _pick_roster(rosters, sess["user_id"], reporter,
+                                        publisher)
         cached = database.all_users()
         latest = agecheck.latest_by_user(database.all_age_checks())
         note_word = (cfg.get("note_filter") or "").strip().lower()
@@ -627,6 +640,15 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         return page(request, "screening.html", session=sess, rows=rows,
                     current=current, rosters=rosters, show=show, q=q,
                     counts=counts, verdicts=agecheck.VERDICTS,
+                    # Every instance being reported right now, so somebody
+                    # without an agent of their own can pick one, and somebody
+                    # with one can look at a colleague's.
+                    choices=choices, reporter=reporter,
+                    mine=bool(current and current.get("user_id")
+                              == sess["user_id"]),
+                    # Scopes the reload poll to this instance: a join in a
+                    # world you are not looking at must not reload your page.
+                    roster_client=current["client_id"] if current else "",
                     live=_roster_live(current, publisher),
                     # Only claim "read from this PC's log" if this server is
                     # actually the one reading it. A database restored onto a
@@ -919,7 +941,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         # hostname, and "DESKTOP-4F9K2" says nothing about who to ask.
         name = owner["user_name"] if owner else payload.get("client_name", "")
         database.upsert_roster(payload.get("client_id", "default"),
-                               payload.get("roster", {}), name)
+                               payload.get("roster", {}), name,
+                               owner["user_id"] if owner else "")
         return {"ok": True}
 
     @app.post("/api/sync/staff")
@@ -932,11 +955,15 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         return {"ok": True, "applied": applied}
 
     @app.get("/api/state")
-    def api_state(request: Request):
-        """Polled by open pages to notice new records without a full reload."""
+    def api_state(request: Request, reporter: str = ""):
+        """Polled by open pages to notice new records without a full reload.
+
+        `reporter` is the instance the page is showing, so it only hears about
+        joins and leaves in that one.
+        """
         if not session_of(request):
             return JSONResponse({"error": "signed out"}, status_code=401)
-        return {"version": database.state_version()}
+        return {"version": database.state_version(reporter)}
 
     @app.get("/healthz")
     def healthz():
@@ -949,6 +976,34 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
 
 # ---------------- helpers ----------------
+def _pick_roster(rosters: list[dict], user_id: str, want: str,
+                 publisher) -> tuple[dict | None, list[dict]]:
+    """Which instance this moderator is looking at, and what else is live.
+
+    Yours by default. Agents report per PC, so two moderators in two instances
+    are two rosters, and showing whichever happened to report last mixed one
+    person's screening list into the other's — the room you are standing in is
+    the one you need.
+
+    Falling back to somebody else's when you have no agent is deliberate: a
+    moderator screening from a phone has no way to report a roster, and the
+    alternative for them is an empty page. Where there is a choice they are
+    asked to make it rather than being handed an arbitrary room.
+    """
+    live = [r for r in rosters if _roster_live(r, publisher)]
+    if want:
+        chosen = next((r for r in rosters if r["client_id"] == want), None)
+        if chosen:
+            return chosen, live
+    mine = next((r for r in live if r.get("user_id") == user_id), None)
+    if mine:
+        return mine, live
+    if len(live) == 1:
+        return live[0], live
+    # Several live and none of them yours: no basis for picking, so don't.
+    return (None, live) if live else (rosters[0] if rosters else None, live)
+
+
 def _pair_code() -> str:
     raw = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(8))
     return f"{raw[:4]}-{raw[4:]}"

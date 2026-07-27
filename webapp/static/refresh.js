@@ -49,9 +49,15 @@
     if (pill) pill.hidden = false;
   }
 
+  /* Pages showing one instance ask only about that one, so a moderator
+     agenting a different world does not reload this page on every join. */
+  var reporter = meta.getAttribute("data-reporter") || "";
+  var stateUrl = "/api/state" +
+    (reporter ? "?reporter=" + encodeURIComponent(reporter) : "");
+
   function tick() {
     if (paused || document.hidden) return;
-    fetch("/api/state", { credentials: "same-origin", cache: "no-store" })
+    fetch(stateUrl, { credentials: "same-origin", cache: "no-store" })
       .then(function (r) {
         if (r.status === 401) { location.href = "/login"; return null; }
         return r.ok ? r.json() : null;

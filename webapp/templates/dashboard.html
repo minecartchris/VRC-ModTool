@@ -35,10 +35,14 @@
 {% if rosters %}
 <div class="grid-3">
   {% for r in rosters %}
-  <a class="card metric is-tertiary" href="/screening">
+  <a class="card metric is-tertiary" href="/screening?reporter={{ r.client_id }}">
     <div class="top">
       <span class="chip-ic">{{ icon("group", 22) }}</span>
+      {% if r.client_id == my_client %}
+      <span class="pill pill-ok" title="Reported by your agent">yours</span>
+      {% else %}
       <span class="pill pill-mut">{{ fmt_ago(r.updated_at) }}</span>
+      {% endif %}
     </div>
     <h3>{{ r.world_name or "Unknown world" }}</h3>
     <div class="n">{{ r.players|length }}<small>in instance</small></div>
