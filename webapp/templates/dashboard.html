@@ -35,11 +35,11 @@
 {% if rosters %}
 <div class="grid-3">
   {% for r in rosters %}
-  <a class="card metric is-tertiary" href="/screening?reporter={{ r.client_id }}">
+  <a class="card metric is-tertiary" href="/screening?instance={{ r.key|urlencode }}">
     <div class="top">
       <span class="chip-ic">{{ icon("group", 22) }}</span>
-      {% if r.client_id == my_client %}
-      <span class="pill pill-ok" title="Reported by your agent">yours</span>
+      {% if r.key == my_instance %}
+      <span class="pill pill-ok" title="You have an agent in this instance">yours</span>
       {% else %}
       <span class="pill pill-mut">{{ fmt_ago(r.updated_at) }}</span>
       {% endif %}
@@ -47,7 +47,9 @@
     <h3>{{ r.world_name or "Unknown world" }}</h3>
     <div class="n">{{ r.players|length }}<small>in instance</small></div>
     <p class="dim" style="margin:6px 0 0">
-      {{ r.client_name or r.client_id }}{% if r.instance_id %} · #{{ short_instance(r.instance_id) }}{% endif %}
+      {{ r.reporters|map(attribute='client_name')|select|unique|join(", ") or "an agent" }}
+      {%- if r.reporters|length > 1 %} ({{ r.reporters|length }} agents){% endif %}
+      {%- if r.instance_id %} · #{{ short_instance(r.instance_id) }}{% endif %}
     </p>
     <span class="ghost">{{ icon("group", 128) }}</span>
   </a>

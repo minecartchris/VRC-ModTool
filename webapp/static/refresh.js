@@ -50,10 +50,12 @@
   }
 
   /* Pages showing one instance ask only about that one, so a moderator
-     agenting a different world does not reload this page on every join. */
-  var reporter = meta.getAttribute("data-reporter") || "";
+     agenting a different world does not reload this page on every join.
+     Every agent in the same room shares the scope, so a colleague's report of
+     your own instance still refreshes you. */
+  var instance = meta.getAttribute("data-instance") || "";
   var stateUrl = "/api/state" +
-    (reporter ? "?reporter=" + encodeURIComponent(reporter) : "");
+    (instance ? "?instance=" + encodeURIComponent(instance) : "");
 
   function tick() {
     if (paused || document.hidden) return;

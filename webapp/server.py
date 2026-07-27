@@ -122,12 +122,12 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         sess = ctx.pop("session", None)
         # Pages showing one instance narrow the fingerprint to that reporter,
         # so another moderator's instance filling up doesn't reload them.
-        roster_client = ctx.get("roster_client", "")
+        roster_scope = ctx.get("roster_scope", "")
         return templates.TemplateResponse(request, name, {
             "session": sess, "cfg": cfg,
             # What the page was rendered from; the browser polls /api/state
             # and reloads when this moves. See static/refresh.js.
-            "state_version": (database.state_version(roster_client)
+            "state_version": (database.state_version(roster_scope)
                               if sess else ""),
             # Whether this server can see VRChat itself. False on a hosted
             # box, where the roster can only arrive from a client that is
@@ -216,7 +216,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             "checks_today": sum(1 for c in checks
                                 if (c["created_at"] or 0) > day),
         }
-        mine, live = _pick_roster(rosters, sess["user_id"], "", publisher)
+        mine, live = _pick_instance(rosters, sess["user_id"], "", publisher)
         return page(request, "dashboard.html", session=sess, stats=stats,
                     recent_incidents=sorted(
                         incidents, key=lambda i: i["created_at"] or 0,
@@ -224,7 +224,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                     recent_checks=checks[:8],
                     # Only instances someone is reporting *now*. A reporter
                     # that went quiet days ago is history, not a room.
-                    rosters=live, my_client=mine["client_id"] if mine else "")
+                    rosters=live, my_instance=mine["key"] if mine else "")
 
     # ---------------- incidents ----------------
     @app.get("/incidents", response_class=HTMLResponse)
@@ -331,13 +331,13 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                     if needle in f"{c['name']} {c['user_id']}".lower()]
         # The same instance Screening would show them, so the name suggestions
         # are the people they can actually see.
-        current, _ = _pick_roster(database.all_rosters(), sess["user_id"], "",
-                                  publisher)
+        current, _ = _pick_instance(database.all_rosters(), sess["user_id"],
+                                    "", publisher)
         return page(request, "age_checks.html", session=sess, checks=rows,
                     verdict=verdict, q=q,
                     roster=current["players"] if current else [],
                     current=current, verdicts=agecheck.VERDICTS,
-                    roster_client=current["client_id"] if current else "")
+                    roster_scope=current["key"] if current else "")
 
     @app.post("/age-checks")
     def age_check_create(request: Request, name: str = Form(...),
@@ -581,11 +581,11 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     # ---------------- screening ----------------
     @app.get("/screening", response_class=HTMLResponse)
     def screening(request: Request, show: str = "", q: str = "",
-                  reporter: str = ""):
+                  instance: str = "", reporter: str = ""):
         sess = require(request)
         rosters = database.all_rosters()
-        current, choices = _pick_roster(rosters, sess["user_id"], reporter,
-                                        publisher)
+        current, choices = _pick_instance(rosters, sess["user_id"],
+                                          instance or reporter, publisher)
         cached = database.all_users()
         latest = agecheck.latest_by_user(database.all_age_checks())
         note_word = (cfg.get("note_filter") or "").strip().lower()
@@ -643,18 +643,19 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                     # Every instance being reported right now, so somebody
                     # without an agent of their own can pick one, and somebody
                     # with one can look at a colleague's.
-                    choices=choices, reporter=reporter,
-                    mine=bool(current and current.get("user_id")
-                              == sess["user_id"]),
+                    choices=choices, instance=instance or reporter,
+                    mine=bool(current and sess["user_id"] in current["owners"]),
                     # Scopes the reload poll to this instance: a join in a
                     # world you are not looking at must not reload your page.
-                    roster_client=current["client_id"] if current else "",
-                    live=_roster_live(current, publisher),
+                    roster_scope=current["key"] if current else "",
+                    live=bool(current and current["live"]),
                     # Only claim "read from this PC's log" if this server is
                     # actually the one reading it. A database restored onto a
                     # different host carries the local reporter's row with it.
-                    source_local=bool(publisher and current
-                                      and current["client_id"] == LOCAL_CLIENT))
+                    source_local=bool(
+                        publisher and current
+                        and any(r["client_id"] == LOCAL_CLIENT
+                                for r in current["reporters"])))
 
     @app.post("/screening/tag")
     def screening_tag(request: Request, user_id: str = Form(...),
@@ -955,15 +956,17 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         return {"ok": True, "applied": applied}
 
     @app.get("/api/state")
-    def api_state(request: Request, reporter: str = ""):
+    def api_state(request: Request, instance: str = "", reporter: str = ""):
         """Polled by open pages to notice new records without a full reload.
 
-        `reporter` is the instance the page is showing, so it only hears about
-        joins and leaves in that one.
+        `instance` is the room the page is showing, so it only hears about
+        joins and leaves in that one. `reporter` is the older, per-agent form,
+        still accepted for a page loaded before this deploy.
         """
         if not session_of(request):
             return JSONResponse({"error": "signed out"}, status_code=401)
-        return {"version": database.state_version(reporter)}
+        scope = instance or (f"client:{reporter}" if reporter else "")
+        return {"version": database.state_version(scope)}
 
     @app.get("/healthz")
     def healthz():
@@ -976,32 +979,96 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
 
 # ---------------- helpers ----------------
-def _pick_roster(rosters: list[dict], user_id: str, want: str,
-                 publisher) -> tuple[dict | None, list[dict]]:
-    """Which instance this moderator is looking at, and what else is live.
+def _instance_key(roster: dict) -> str:
+    """What counts as "the same room" across reporters.
 
-    Yours by default. Agents report per PC, so two moderators in two instances
-    are two rosters, and showing whichever happened to report last mixed one
-    person's screening list into the other's — the room you are standing in is
-    the one you need.
+    A world plus an instance id, because that is what two moderators standing
+    together share. Anything that arrives without one is kept to itself rather
+    than merged — several unknown rooms are not one room.
+    """
+    world, inst = roster.get("world_id") or "", roster.get("instance_id") or ""
+    return f"{world}:{inst}" if (world or inst) else f"client:{roster['client_id']}"
+
+
+def _merge_rosters(rosters: list[dict], publisher) -> list[dict]:
+    """One entry per instance, however many agents are reporting it.
+
+    Two moderators in the same room see the same list. Their logs are not
+    identical — each client learns about a join when it renders the avatar, so
+    one is usually a few seconds ahead and someone who joined behind you may be
+    missing from your own log entirely — so the union is a better answer than
+    either report, and much better than flipping between them.
+    """
+    merged: dict[str, dict] = {}
+    for r in rosters:
+        key = _instance_key(r)
+        inst = merged.get(key)
+        if inst is None:
+            inst = merged[key] = {
+                "key": key, "world_name": r["world_name"],
+                "world_id": r["world_id"], "instance_id": r["instance_id"],
+                "players": [], "reporters": [], "owners": set(),
+                "updated_at": 0.0, "seen_at": 0.0, "live": False,
+            }
+        inst["reporters"].append(r)
+        if r.get("user_id"):
+            inst["owners"].add(r["user_id"])
+        inst["updated_at"] = max(inst["updated_at"], r["updated_at"])
+        inst["seen_at"] = max(inst["seen_at"], r["seen_at"])
+        inst["live"] = inst["live"] or _roster_live(r, publisher)
+        # The freshest reporter names the world: an agent that has just moved
+        # knows the new name before a quieter one does.
+        if r["seen_at"] >= inst["seen_at"] and r["world_name"]:
+            inst["world_name"] = r["world_name"]
+
+        seen = {(p.get("user_id") or "").lower() or
+                f"name:{(p.get('name') or '').lower()}"
+                for p in inst["players"]}
+        for p in r["players"]:
+            ident = (p.get("user_id") or "").lower() or \
+                f"name:{(p.get('name') or '').lower()}"
+            if ident and ident not in seen:
+                seen.add(ident)
+                inst["players"].append(p)
+
+    out = list(merged.values())
+    for inst in out:
+        inst["players"].sort(key=lambda p: (p.get("name") or "").lower())
+        inst["reporters"].sort(key=lambda r: r["seen_at"], reverse=True)
+    out.sort(key=lambda i: i["seen_at"], reverse=True)
+    return out
+
+
+def _pick_instance(rosters: list[dict], user_id: str, want: str,
+                   publisher) -> tuple[dict | None, list[dict]]:
+    """Which room this moderator is looking at, and what else is live.
+
+    Yours by default — the room you are standing in is the one you need, and
+    mixing a colleague's instance into it is how somebody gets screened against
+    a list they were never on.
 
     Falling back to somebody else's when you have no agent is deliberate: a
     moderator screening from a phone has no way to report a roster, and the
     alternative for them is an empty page. Where there is a choice they are
     asked to make it rather than being handed an arbitrary room.
     """
-    live = [r for r in rosters if _roster_live(r, publisher)]
+    instances = _merge_rosters(rosters, publisher)
+    live = [i for i in instances if i["live"]]
     if want:
-        chosen = next((r for r in rosters if r["client_id"] == want), None)
+        chosen = next((i for i in instances if i["key"] == want), None)
+        if not chosen:      # a link from before the merge, naming one reporter
+            chosen = next((i for i in instances
+                           if any(r["client_id"] == want
+                                  for r in i["reporters"])), None)
         if chosen:
             return chosen, live
-    mine = next((r for r in live if r.get("user_id") == user_id), None)
+    mine = next((i for i in live if user_id in i["owners"]), None)
     if mine:
         return mine, live
     if len(live) == 1:
         return live[0], live
     # Several live and none of them yours: no basis for picking, so don't.
-    return (None, live) if live else (rosters[0] if rosters else None, live)
+    return (None, live) if live else (instances[0] if instances else None, live)
 
 
 def _pair_code() -> str:

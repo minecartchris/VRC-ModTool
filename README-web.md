@@ -70,14 +70,21 @@ So the roster always comes from something running on a PC that is in the world:
 2. **The roster agent** (`agent.py`), for the normal hosted case. See below.
 3. **The desktop app**, which pushes its roster when sync is on.
 
-**One instance per moderator.** A paired agent reports the room its own PC is
-in, so two moderators in two instances are two rosters and neither sees the
-other's players. Screening shows yours by default; the room you are standing in
-is the one you need, and mixing a colleague's into it is how somebody gets
-screened against a list they were never on.
+**One screening list per instance.** A paired agent reports the room its own PC
+is in, and rosters are grouped by `world_id:instance_id` — not by who sent
+them. Screening shows the room you are standing in, which is the one you need;
+mixing a colleague's instance into it is how somebody gets screened against a
+list they were never on.
+
+Two moderators in *different* rooms therefore get different lists. Two in the
+*same* room get one merged list, and both count as its owner. The merge is a
+union rather than a most-recent-wins, because their logs genuinely differ: a
+client only learns about a join it rendered, so somebody who arrived behind you
+may be missing from your log and present in theirs. Players are matched on
+`usr_` id, falling back to display name when a log line carried no id.
 
 Where there is more than one live, a switcher across the top names each room and
-who is reporting it, so you can look into a colleague's instance deliberately.
+everyone reporting it, so you can look into a colleague's instance deliberately.
 A moderator with no agent of their own — screening from a phone, say — is asked
 which room rather than handed an arbitrary one; if only one is live, that is not
 a choice worth asking about, so they simply get it.
@@ -85,7 +92,8 @@ a choice worth asking about, so they simply get it.
 Reporters heartbeat every 30s; a heartbeat updates liveness but deliberately
 does *not* count as a change, so open browsers don't reload twice a minute for
 nothing. The reload poll is scoped to the instance on screen, so a join in a
-world you are not looking at leaves your page alone.
+world you are not looking at leaves your page alone — while a second agent in
+*your* room still refreshes you, since they share a scope.
 
 If no reporter is current the Screening page says so in red rather than quietly
 showing an old list — screening against people who already left is worse than

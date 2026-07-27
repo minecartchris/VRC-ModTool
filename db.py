@@ -848,7 +848,7 @@ class Database:
         return True
 
     # ---------------- change detection ----------------
-    def state_version(self, roster_client: str = "") -> str:
+    def state_version(self, scope: str = "") -> str:
         """Cheap fingerprint of everything the web pages display.
 
         Polled by the browser every few seconds, so it must stay a handful of
@@ -856,19 +856,33 @@ class Database:
         it too, so a hard delete changes the fingerprint even though it lowers
         no timestamp.
 
-        `roster_client` narrows the roster part to one reporter. Without it,
-        two moderators agenting different instances would reload each other's
+        `scope` narrows the roster part to one instance — `world_id:instance_id`,
+        or `client:<id>` for a reporter that named no world. Without it, two
+        moderators agenting different instances would reload each other's
         Screening page on every join and leave in a world they cannot see.
+        Every agent in one room shares a scope, so a second agent joining your
+        instance keeps refreshing your page, as it should.
         """
-        if roster_client:
+        if scope.startswith("client:"):
             r = self._one("""
                 SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
                        (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
-                       (SELECT COALESCE(updated_at, 0) FROM rosters
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM rosters
                          WHERE client_id=?)                                  AS r,
                        (SELECT COUNT(*) FROM incidents)                      AS ic,
                        (SELECT COUNT(*) FROM age_checks)                     AS ac""",
-                          (roster_client,))
+                          (scope[len("client:"):],))
+        elif scope:
+            # world ids carry no colon, so the first one splits it cleanly.
+            world, _, inst = scope.partition(":")
+            r = self._one("""
+                SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM rosters
+                         WHERE world_id=? AND instance_id=?)                 AS r,
+                       (SELECT COUNT(*) FROM incidents)                      AS ic,
+                       (SELECT COUNT(*) FROM age_checks)                     AS ac""",
+                          (world, inst))
         else:
             r = self._one("""
                 SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
