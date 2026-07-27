@@ -999,42 +999,49 @@ def _merge_rosters(rosters: list[dict], publisher) -> list[dict]:
     missing from your own log entirely — so the union is a better answer than
     either report, and much better than flipping between them.
     """
-    merged: dict[str, dict] = {}
+    grouped: dict[str, list[dict]] = {}
     for r in rosters:
-        key = _instance_key(r)
-        inst = merged.get(key)
-        if inst is None:
-            inst = merged[key] = {
-                "key": key, "world_name": r["world_name"],
-                "world_id": r["world_id"], "instance_id": r["instance_id"],
-                "players": [], "reporters": [], "owners": set(),
-                "updated_at": 0.0, "seen_at": 0.0, "live": False,
-            }
-        inst["reporters"].append(r)
-        if r.get("user_id"):
-            inst["owners"].add(r["user_id"])
-        inst["updated_at"] = max(inst["updated_at"], r["updated_at"])
-        inst["seen_at"] = max(inst["seen_at"], r["seen_at"])
-        inst["live"] = inst["live"] or _roster_live(r, publisher)
-        # The freshest reporter names the world: an agent that has just moved
-        # knows the new name before a quieter one does.
-        if r["seen_at"] >= inst["seen_at"] and r["world_name"]:
-            inst["world_name"] = r["world_name"]
+        grouped.setdefault(_instance_key(r), []).append(r)
 
-        seen = {(p.get("user_id") or "").lower() or
-                f"name:{(p.get('name') or '').lower()}"
-                for p in inst["players"]}
-        for p in r["players"]:
-            ident = (p.get("user_id") or "").lower() or \
-                f"name:{(p.get('name') or '').lower()}"
-            if ident and ident not in seen:
-                seen.add(ident)
-                inst["players"].append(p)
+    out = []
+    for key, reporters in grouped.items():
+        reporters.sort(key=lambda r: r["seen_at"], reverse=True)
+        live = [r for r in reporters if _roster_live(r, publisher)]
+        # Only reporters that are still reporting describe the room. An agent
+        # that went quiet hours ago left a list of who was there *then*, and
+        # merging that in showed everyone who had passed through all day —
+        # 184 names for a 36-player instance. With none live at all, the most
+        # recent one is the last thing known, and the page says it is stale.
+        current = live or reporters[:1]
 
-    out = list(merged.values())
-    for inst in out:
-        inst["players"].sort(key=lambda p: (p.get("name") or "").lower())
-        inst["reporters"].sort(key=lambda r: r["seen_at"], reverse=True)
+        players, seen = [], set()
+        for r in current:
+            for p in r["players"]:
+                ident = (p.get("user_id") or "").lower() or \
+                    f"name:{(p.get('name') or '').lower()}"
+                if ident and ident not in seen:
+                    seen.add(ident)
+                    players.append(p)
+        players.sort(key=lambda p: (p.get("name") or "").lower())
+
+        out.append({
+            "key": key,
+            # The freshest reporter names the world: an agent that has just
+            # moved knows the new name before a quieter one does.
+            "world_name": next((r["world_name"] for r in current
+                                if r["world_name"]), ""),
+            "world_id": current[0]["world_id"],
+            "instance_id": current[0]["instance_id"],
+            "players": players,
+            "reporters": current,
+            # Ownership follows the agents actually in there, so a moderator
+            # whose agent died does not keep being shown a room as "yours".
+            "owners": {r["user_id"] for r in current if r.get("user_id")},
+            "updated_at": max(r["updated_at"] for r in current),
+            "seen_at": max(r["seen_at"] for r in current),
+            "live": bool(live),
+        })
+
     out.sort(key=lambda i: i["seen_at"], reverse=True)
     return out
 
