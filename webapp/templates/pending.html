@@ -44,10 +44,37 @@
 <p class="dim">Nothing of yours is waiting.</p>
 {% endif %}
 
-{% if others %}
+{% if hide_others %}
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Other moderators</h2>
+    <span class="dim">hidden — {{ others_count }} waiting</span>
+  </div>
+  <p class="dim" style="margin-bottom:12px">You are only being shown your own.
+    They are still queued for whoever they belong to.</p>
+  <form method="post" action="/pending/others">
+    <input type="hidden" name="hide" value="0">
+    <button type="submit">{{ icon("group", 16) }} Show other moderators' logs</button>
+  </form>
+</section>
+
+{% elif others %}
 <section class="card">
   <div class="card-head">
     <h2 style="margin:0">Other moderators — {{ others|length }} waiting</h2>
+    <div class="row-form" style="margin:0">
+      <form method="post" action="/pending/others">
+        <input type="hidden" name="hide" value="1">
+        <button class="btn-sm" type="submit"
+                title="Show only your own prompts, on this account">
+          Hide these</button>
+      </form>
+      <form method="post" action="/pending/dismiss-others"
+            onsubmit="return confirm('Ignore all {{ others|length }} prompts from other moderators?\n\nThis clears them for those moderators too — their kicks stay in VRChat\'s audit log and can still be filed by hand.')">
+        <button class="btn-sm btn-danger" type="submit">
+          Ignore all {{ others|length }}</button>
+      </form>
+    </div>
   </div>
   <p class="dim" style="margin-bottom:12px">You can fill these in too, but the
     log keeps whoever VRChat recorded as the actor.</p>

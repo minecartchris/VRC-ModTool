@@ -221,6 +221,16 @@ CREATE TABLE IF NOT EXISTS agent_pairings (
     claimed_at  REAL                -- when the agent collected the key
 );
 
+-- Per-account UI choices, e.g. whether the Pending page shows other people's
+-- kicks. Server-side rather than in the browser so the choice follows the
+-- moderator between their PC and their phone.
+CREATE TABLE IF NOT EXISTS user_prefs (
+    user_id TEXT,
+    name    TEXT,
+    value   TEXT,
+    PRIMARY KEY (user_id, name)
+);
+
 -- Sync cursors, one row per peer ("server" on a desktop client).
 CREATE TABLE IF NOT EXISTS sync_state (
     peer         TEXT PRIMARY KEY,
@@ -621,6 +631,21 @@ class Database:
         r = self._one("SELECT * FROM pending_actions WHERE id=?", (action_id,))
         return dict(r) if r else None
 
+    def claim_pending_action(self, action_id: str) -> bool:
+        """Take ownership of an unresolved action. True only for the winner.
+
+        Checking `resolved_at` and then writing it leaves a window between the
+        two, and a double-clicked form fits inside it easily — both requests
+        read "unresolved", both file a log, and one kick becomes two. The
+        conditional UPDATE decides it in the database instead.
+        """
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE pending_actions SET resolved_at=? "
+                "WHERE id=? AND resolved_at IS NULL", (time.time(), action_id))
+            self.conn.commit()
+            return cur.rowcount == 1
+
     def resolve_pending_action(self, action_id: str, reason: str,
                                incident_id: str) -> None:
         self._exec(
@@ -744,6 +769,19 @@ class Database:
         """Record that a key just reported, so its owner can see it working."""
         self._exec("UPDATE agent_keys SET last_used=? WHERE roster_key=?",
                    (time.time(), key))
+
+    # ---------------- per-account preferences ----------------
+    def pref(self, user_id: str, name: str, default: str = "") -> str:
+        row = self._one(
+            "SELECT value FROM user_prefs WHERE user_id=? AND name=?",
+            (user_id, name))
+        return row["value"] if row else default
+
+    def set_pref(self, user_id: str, name: str, value: str) -> None:
+        self._exec(
+            "INSERT INTO user_prefs (user_id, name, value) VALUES (?,?,?) "
+            "ON CONFLICT(user_id, name) DO UPDATE SET value=excluded.value",
+            (user_id, name, value))
 
     # ---------------- who has signed in ----------------
     def note_known_user(self, user_id: str, name: str) -> None:

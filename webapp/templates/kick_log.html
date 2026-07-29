@@ -16,7 +16,10 @@
 {% endif %}
 
 <section class="card">
-  <form method="post" action="/kick-log" id="kicklog">
+  <form method="post" action="/kick-log" id="kicklog" data-once>
+    {# Identifies this rendered form, so a double-clicked Submit files one log
+       rather than two. A new page render is a new id. #}
+    <input type="hidden" name="form_id" value="{{ form_id }}">
     <h2>Action</h2>
     <div class="chips">
       {% for a in ["Kick", "Warn", "Ban"] %}

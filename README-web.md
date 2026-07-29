@@ -489,6 +489,26 @@ outright rather than sitting there looking healthy.
 Only the first hour of history is queued on first run, so switching this on
 doesn't confront somebody with every kick the group ever had.
 
+**One kick, one log.** Two submits of the same prompt — a double click, or the
+banner in one tab and `/pending` in another — used to file two. The prompt is
+now claimed with a conditional `UPDATE` before anything is written, and the
+incident id is derived from VRChat's own audit id, so even a filing that beats
+the claim lands on the same record. The Kick Log form carries an id minted per
+render, which does the same for a double-clicked **Submit**; loading the page
+again gives a fresh one, so filing a genuinely similar log still works. The
+guard sits in the shared helper, so a repeat can't re-post to Discord or
+record a second age check either.
+
+**Other people's prompts.** The Pending page lists them so anyone can fill one
+in, which is useful and, on a busy night, noise. Two controls:
+
+- **Hide these** — a per-account choice, stored server-side so it follows you
+  from PC to phone. The nav badge then counts only yours.
+- **Ignore all N** — clears them, exactly as the per-item *not mine / ignore*
+  button already did, in one click. It ends the prompt for its owner too, so
+  it asks first; the kick stays in VRChat's audit log and can still be filed
+  by hand.
+
 ## Kick Log
 
 `/kick-log` files a kick, warn or ban by hand — the page the old tool had, for

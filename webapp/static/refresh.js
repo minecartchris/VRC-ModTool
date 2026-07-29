@@ -71,6 +71,17 @@
       .catch(function () { /* server down: keep showing what we have */ });
   }
 
+  /* A second click on Submit is never a second kick. The server files one
+     log either way, but a button that keeps looking clickable invites the
+     click that made people doubt it. */
+  document.querySelectorAll("form[data-once]").forEach(function (form) {
+    form.addEventListener("submit", function () {
+      var btn = form.querySelector('button[type="submit"]');
+      // After the event, so the submission itself still goes out.
+      if (btn) setTimeout(function () { btn.disabled = true; }, 0);
+    });
+  });
+
   if (toggle) {
     toggle.addEventListener("click", function () {
       paused = !paused;

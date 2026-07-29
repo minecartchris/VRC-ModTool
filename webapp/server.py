@@ -118,6 +118,17 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         """
         return [r for r in database.all_rosters() if _roster_allowed(cfg, r)]
 
+    def hides_others(user_id: str) -> bool:
+        """Whether this moderator has turned off other people's prompts."""
+        return database.pref(user_id, "hide_others") == "1"
+
+    def pending_count(sess: dict) -> int:
+        """What the nav badge shows — the same set the page will show."""
+        rows = database.pending_actions()
+        if hides_others(sess["user_id"]):
+            rows = [a for a in rows if a["actor_id"] == sess["user_id"]]
+        return len(rows)
+
     def is_admin(user_id: str) -> bool:
         """Admin on top of being a moderator, not instead of it.
 
@@ -157,7 +168,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             # Drives the "you kicked someone — why?" prompt on every page.
             "my_pending": (database.pending_actions(sess["user_id"])
                            if sess else []),
-            "pending_total": len(database.pending_actions()) if sess else 0,
+            "pending_total": pending_count(sess) if sess else 0,
             **ctx})
 
     def set_session_cookie(resp: Response, token: str) -> None:
@@ -384,13 +395,27 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                             moderator: str, moderator_id: str = "",
                             when: float | None = None, world_id: str = "",
                             instance_id: str = "", origin: str = "web",
-                            age_hint: int | None = None) -> dict:
+                            age_hint: int | None = None,
+                            log_id: str = "") -> dict:
         """One kick/warn/ban -> incident, age check, Discord. Shared by the
         manual Kick Log page and the audit-log prompt so both produce
-        identical records."""
+        identical records.
+
+        `log_id` lets a caller with a natural key use it — the audit prompt
+        passes one derived from VRChat's own audit id, so filing the same kick
+        twice overwrites one incident instead of creating a second.
+        """
+        # Filed already? Then this is a repeat submit, and everything below —
+        # the age check, the Discord post — would happen a second time too.
+        # One choke point for both callers.
+        if log_id:
+            existing = database.get_incident(log_id)
+            if existing and not existing["deleted"]:
+                return existing
+
         when = when or time.time()
         incident = {
-            "id": db.new_id(), "created_at": when,
+            "id": log_id or db.new_id(), "created_at": when,
             "trigger": f"{action} — {reason}"[:160],
             "transcript": [f"Reason: {reason}"],
             "world_name": "", "world_id": world_id, "instance_id": instance_id,
@@ -476,14 +501,18 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         return page(request, "kick_log.html", session=sess,
                     reasons=reason_chips(sess["user_id"]),
                     my_reasons=database.user_reasons(sess["user_id"]),
-                    recent=recent[:12], ok=ok, err=err)
+                    recent=recent[:12], ok=ok, err=err,
+                    # One per rendered form, so a form submitted twice files
+                    # one log. A fresh page is a fresh id, so filing the same
+                    # kick again on purpose still works.
+                    form_id=secrets.token_hex(8))
 
     @app.post("/kick-log")
     def kick_log_submit(request: Request, action: str = Form("Kick"),
                         names: list[str] = Form(default=[]),
                         user_ids: list[str] = Form(default=[]),
                         reasons: list[str] = Form(default=[]),
-                        detail: str = Form("")):
+                        detail: str = Form(""), form_id: str = Form("")):
         sess = require(request)
         targets = []
         for name, uid in zip(names, user_ids + [""] * len(names)):
@@ -506,7 +535,11 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             action=action, reason=reason, targets=targets,
             moderator=sess["name"], moderator_id=sess["user_id"], origin="web",
             age_hint=int(bare) if bare.isdigit() and 1 <= int(bare) <= 120
-            else None)
+            else None,
+            # Derived from the form, so a double-clicked Submit resolves to
+            # the same log rather than a second one. Ignored if a client sends
+            # something that is not one of ours.
+            log_id=f"web-{form_id}" if _clean_form_id(form_id) else "")
         return RedirectResponse("/kick-log?ok=1", status_code=303)
 
     @app.post("/kick-log/shortcut")
@@ -541,13 +574,41 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     @app.get("/pending", response_class=HTMLResponse)
     def pending_page(request: Request):
         sess = require(request)
+        hide_others = hides_others(sess["user_id"])
         mine = database.pending_actions(sess["user_id"])
         others = [a for a in database.pending_actions()
                   if a["actor_id"] != sess["user_id"]]
         return page(request, "pending.html", session=sess, mine=mine,
-                    others=others, audit=audit.status(),
+                    # Hidden means hidden from this moderator's view only;
+                    # the prompts stay queued for whoever they belong to.
+                    others=[] if hide_others else others,
+                    others_count=len(others), hide_others=hide_others,
+                    audit=audit.status(),
                     reasons=reason_chips(sess["user_id"]),
                     recent=database.pending_actions(include_done=True)[:15])
+
+    @app.post("/pending/others")
+    def pending_others(request: Request, hide: str = Form("1")):
+        """Show or hide other moderators' prompts, for this account."""
+        sess = require(request)
+        database.set_pref(sess["user_id"], "hide_others",
+                          "1" if hide == "1" else "0")
+        return RedirectResponse("/pending", status_code=303)
+
+    @app.post("/pending/dismiss-others")
+    def pending_dismiss_others(request: Request):
+        """Clear every prompt that isn't yours.
+
+        The same thing the per-item "not mine / ignore" button already does,
+        done in one click. It ends the prompt for its owner as well, which is
+        why the button asks first — the kick itself stays in VRChat's audit
+        log either way, and can still be filed by hand from the Kick Log.
+        """
+        sess = require(request)
+        for a in database.pending_actions():
+            if a["actor_id"] != sess["user_id"]:
+                database.dismiss_pending_action(a["id"])
+        return RedirectResponse("/pending", status_code=303)
 
     @app.post("/pending/{action_id}/reason")
     def pending_reason(request: Request, action_id: str,
@@ -566,6 +627,12 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         if not reason:
             return RedirectResponse(f"{back}?err=no_reason", status_code=303)
 
+        # Claim it before filing anything. Two submits — a double click, or
+        # the banner in one tab and /pending in another — both pass the check
+        # above, and only this decides which one gets to file.
+        if not database.claim_pending_action(action_id):
+            return RedirectResponse(back, status_code=303)
+
         target = {"name": action["target_name"], "user_id": action["target_id"]}
         world_id, _, instance_id = (action["location"] or "").partition(":")
         bare = detail.strip()
@@ -578,7 +645,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             when=action["created_at"] or time.time(),
             world_id=world_id, instance_id=instance_id, origin="vrchat-audit",
             age_hint=int(bare) if bare.isdigit() and 1 <= int(bare) <= 120
-            else None)
+            else None,
+            # VRChat's own audit id, so even a filing that somehow slips past
+            # the claim above lands on the same incident rather than a second.
+            log_id=f"aud-{action_id}"[:64])
         database.resolve_pending_action(action_id, reason, incident["id"])
         return RedirectResponse(back, status_code=303)
 
@@ -1118,6 +1188,12 @@ def _pick_instance(rosters: list[dict], user_id: str, want: str,
         return live[0], live
     # Several live and none of them yours: no basis for picking, so don't.
     return (None, live) if live else (instances[0] if instances else None, live)
+
+
+def _clean_form_id(value: str) -> bool:
+    """Ours are 16 hex characters; anything else gets a random id instead."""
+    return bool(value) and len(value) == 16 and all(
+        c in "0123456789abcdef" for c in value)
 
 
 def _pair_code() -> str:
