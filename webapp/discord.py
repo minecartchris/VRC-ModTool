@@ -62,6 +62,13 @@ def post(cfg: dict, *, action: str, moderator: str, reason: str,
     saved by the time this runs, and a dead webhook must not make it look like
     the log failed.
     """
+    # Actions the channel does not want. The log, the incident and the age
+    # check are still recorded — this only decides what gets announced.
+    skip = {str(a).strip().lower()
+            for a in (cfg.get("discord_skip_actions") or [])}
+    if (action or "").strip().lower() in skip:
+        return
+
     url = (cfg.get("discord_webhook_url") or "").strip()
     overaged_url = (cfg.get("overaged_webhook_url") or "").strip()
     if not url and not overaged_url:

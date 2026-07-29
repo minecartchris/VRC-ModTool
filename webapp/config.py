@@ -46,6 +46,10 @@ DEFAULTS = {
     "discord_webhook_url": "",
     # Second channel for age removals, mirroring that tool's behaviour.
     "overaged_webhook_url": "",
+    # Actions that are logged but not announced, e.g. ["Warn"] where warns are
+    # routine and would drown the channel. Only the Discord post is skipped:
+    # the incident, the age check and the Kick Log page are unaffected.
+    "discord_skip_actions": [],
     # One-click chips on the Kick Log and the reason prompt. Same list the
     # Teen Chillout web tool offers (KickLogForm.jsx COMMON_REASONS), so
     # reasons stay comparable between the two tools. Moderators can add their

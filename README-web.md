@@ -452,11 +452,17 @@ the group audit log and queues each action so its moderator is asked for a
 reason while they still remember it.
 
 ```json
-"audit_group": "grp_…",          // the group whose instances you moderate
+"audit_group": "grp_…",            // the group whose instances you moderate
 "audit_poll_seconds": 60,
-"discord_webhook_url": "…",      // where the finished log is announced
-"overaged_webhook_url": "…"      // second channel for age removals
+"discord_webhook_url": "…",        // where the finished log is announced
+"overaged_webhook_url": "…",       // second channel for age removals
+"discord_skip_actions": ["Warn"]   // logged, but not announced
 ```
+
+`discord_skip_actions` names actions the channel does not want — warns are
+routine enough to drown it. Only the announcement is skipped: the incident,
+the age check and the Kick Log page are unaffected, so nothing is lost, it
+just isn't broadcast.
 
 | Audit event | Becomes |
 |---|---|
