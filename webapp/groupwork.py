@@ -28,10 +28,28 @@ POLL = 20.0
 #: an outage, a stale cookie. Long enough not to hammer them.
 RETRY_AFTER = 900.0
 
+#: How long a 403 sidelines one moderator's session for one kind of action.
+#: Not forever: group roles change, and a transient refusal should not cost us
+#: that account until the process restarts.
+DENIED_FOR = 600.0
+
 #: No live session held the permission. Try again on the next poll rather than
 #: waiting out RETRY_AFTER, because "somebody signed in" is the event we are
 #: really waiting for and it can happen at any moment.
 RETRY_NO_PROVIDER = 0.0
+
+
+def _describe(error: Exception) -> str:
+    """VRChat's own words, not just the status line.
+
+    requests puts the URL in the message and the reason in the body, and the
+    body is the half that says *which* permission was missing.
+    """
+    body = ""
+    resp = getattr(error, "response", None)
+    if resp is not None:
+        body = (getattr(resp, "text", "") or "").strip()[:180]
+    return f"{error}" + (f" — {body}" if body else "")
 
 
 class GroupWorker:
@@ -100,24 +118,30 @@ class GroupWorker:
 
     def _attempt(self, row: dict, clients: dict) -> bool:
         last_error = "no signed-in moderator holds that permission"
+        now = time.time()
         for token, api in clients.items():
-            if self._denied.get((token, row["kind"])):
+            # Denials expire: somebody's group role can change while the
+            # process is up, and a 403 that turns out to have been transient
+            # should not sideline that account until the next restart.
+            denied_at = self._denied.get((token, row["kind"]), 0)
+            if denied_at and now - denied_at < DENIED_FOR:
                 continue
             who = (getattr(api, "user", None) or {}).get("displayName", "?")
             try:
                 self._perform(api, row)
             except Exception as e:
-                text = f"{e}"
+                text = _describe(e)
                 # 403 is this account lacking the permission, not a failure of
                 # the action — try the next moderator, and stop asking this one.
                 if "403" in text:
                     self._denied[(token, row["kind"])] = time.time()
-                    last_error = f"{who} lacks the permission"
+                    last_error = f"{who}: {text}"
                     continue
                 # Anything else is about the action or VRChat itself, and
                 # another moderator would hit exactly the same wall.
-                self.db.defer_group_action(row["id"], text, RETRY_AFTER)
-                self.last_error = text
+                self.db.defer_group_action(row["id"], f"{who}: {text}",
+                                           RETRY_AFTER)
+                self.last_error = f"{who}: {text}"
                 return False
             self.db.finish_group_action(row["id"], who)
             return True
@@ -133,8 +157,17 @@ class GroupWorker:
             # Checked at send time, not at queue time: between a verdict and a
             # moderator being available the person may well have joined, and
             # inviting an existing member is noise for them.
-            if api.group_member(row["group_id"], row["user_id"]):
-                return
+            #
+            # Reading the member list is a *different* permission from sending
+            # an invite, so a moderator who can invite may well be refused
+            # here. Failing the whole action on that would be the tail wagging
+            # the dog: if we cannot tell, send it. A duplicate invite is a
+            # smaller problem than never inviting anybody.
+            try:
+                if api.group_member(row["group_id"], row["user_id"]):
+                    return
+            except Exception:
+                pass
             api.invite_to_group(row["group_id"], row["user_id"])
             return
         raise ValueError(f"unknown action {row['kind']!r}")
