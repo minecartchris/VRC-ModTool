@@ -28,6 +28,22 @@ POLL = 20.0
 #: an outage, a stale cookie. Long enough not to hammer them.
 RETRY_AFTER = 900.0
 
+#: VRChat rate limits group invites hard. A 429 is not a problem with the
+#: action, just with how fast we asked, so it comes back sooner than a real
+#: failure would.
+RETRY_RATE_LIMITED = 120.0
+
+#: Sent per pass, and how long to wait between them. A backlog of twenty
+#: invites going out shoulder to shoulder is exactly what earns a 429.
+BATCH = 5
+SPACING = 2.0
+
+#: VRChat's way of saying the action was unnecessary. Not a failure: the person
+#: is in the group, or has an invite sitting in their notifications, which is
+#: the outcome we wanted. Retrying these forever would hammer the API for no
+#: reason and leave the queue permanently dirty.
+SETTLED = ("already a member", "already invited", "already in the group")
+
 #: How long a 403 sidelines one moderator's session for one kind of action.
 #: Not forever: group roles change, and a transient refusal should not cost us
 #: that account until the process restarts.
@@ -37,6 +53,12 @@ DENIED_FOR = 600.0
 #: waiting out RETRY_AFTER, because "somebody signed in" is the event we are
 #: really waiting for and it can happen at any moment.
 RETRY_NO_PROVIDER = 0.0
+
+
+def _settled(error: Exception) -> bool:
+    """Whether VRChat is telling us the action was already unnecessary."""
+    text = _describe(error).lower()
+    return any(phrase in text for phrase in SETTLED)
 
 
 def _describe(error: Exception) -> str:
@@ -97,16 +119,18 @@ class GroupWorker:
 
     def run_once(self) -> int:
         """Attempt every action that is due. Returns how many went out."""
-        due = self.db.due_group_actions()
+        due = self.db.due_group_actions(limit=BATCH * 4)
         if not due:
             self.last_run = time.time()
             return 0
 
         clients = self._live_clients()
         done = 0
-        for row in due:
+        for n, row in enumerate(due[:BATCH]):
             if self._stop.is_set():
                 break
+            if n and clients:
+                self._stop.wait(SPACING)      # pace, so VRChat doesn't 429
             if not clients:
                 self.db.defer_group_action(
                     row["id"], "waiting for a moderator with the permission "
@@ -139,8 +163,8 @@ class GroupWorker:
                     continue
                 # Anything else is about the action or VRChat itself, and
                 # another moderator would hit exactly the same wall.
-                self.db.defer_group_action(row["id"], f"{who}: {text}",
-                                           RETRY_AFTER)
+                wait = (RETRY_RATE_LIMITED if "429" in text else RETRY_AFTER)
+                self.db.defer_group_action(row["id"], f"{who}: {text}", wait)
                 self.last_error = f"{who}: {text}"
                 return False
             self.db.finish_group_action(row["id"], who)
@@ -168,7 +192,12 @@ class GroupWorker:
                     return
             except Exception:
                 pass
-            api.invite_to_group(row["group_id"], row["user_id"])
+            try:
+                api.invite_to_group(row["group_id"], row["user_id"])
+            except Exception as e:
+                if _settled(e):
+                    return          # already in, or already asked — that'll do
+                raise
             return
         raise ValueError(f"unknown action {row['kind']!r}")
 
