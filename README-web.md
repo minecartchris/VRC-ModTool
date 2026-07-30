@@ -275,7 +275,7 @@ python run_web.py --host 0.0.0.0
 | Table | Contents |
 |---|---|
 | `incidents` | one row per trigger or manual filing; transcript, roster, world, clip/screenshot paths, status, notes |
-| `age_checks` | one row per verdict: player, over/under/in-range, reported age, who checked, which incident it filed |
+| `age_checks` | one row per verdict: player, over/under/in-range, reported age, who checked, and the kick it came from if it came from one |
 | `screening_users` | cached VRChat note + groups per user, so nobody is looked up twice |
 | `rosters` | one row per reporter: the instance that PC is in, and whose agent it is |
 | `web_sessions` | opaque session tokens; **no passwords, no VRChat cookies** |
@@ -309,7 +309,7 @@ web writes statuses, notes and age checks.
 |---|---|
 | `/` | counts, live instance, recent activity |
 | `/incidents`, `/incidents/{id}` | list/search, detail with evidence, notes, status, paste-ready report |
-| `/age-checks` | log + record a check (over/under also files an incident) |
+| `/age-checks` | log + record a check |
 | `/screening` | live roster, filterable by verification state, with per-player verdict buttons and VRChat note tagging |
 | `/settings` | your account, the agent download, your paired PCs |
 | `/admin` | admins, every paired agent, and revoking any of them |

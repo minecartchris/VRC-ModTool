@@ -420,7 +420,11 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             verdict=verdict, reported_age=age, note=note.strip(),
             world_name=world_name, world_id=world_id, instance_id=instance_id,
             checked_by=sess["name"], checked_by_id=sess["user_id"],
-            source="web")
+            source="web",
+            # A verdict is a note about a person; an incident is a moderation
+            # action. Screening a room produces dozens of the first, and
+            # filing each as the second buried the real kicks.
+            file_incident=False)
         queue_invite_if_verified(verdict, user_id=user_id.strip(),
                                  name=name.strip(), sess=sess)
         return RedirectResponse(back, status_code=303)
