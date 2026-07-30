@@ -655,8 +655,17 @@ backlog goes out.
 ```json
 "action_group": "grp_…",           // empty falls back to roster_group
 "auto_ban_overage": true,          // ban the target of an overage kick
+"hold_bans": true,                 // …but record them instead of sending
 "auto_invite_verified": true       // invite anyone verified in range
 ```
+
+`hold_bans` is the dry run. Bans queue exactly as they would, and the Admin
+page shows every one — who, why, and which kick it came from — but nothing
+reaches VRChat. It is how you read what the rule *would* do to real people
+before letting it. Held rows are left completely untouched: no attempt
+counted, no error written, so clearing the flag finds the backlog as it was
+and sends the lot. Read it before releasing, and cancel anything that should
+not happen.
 
 | | Needs | When it fires |
 |---|---|---|

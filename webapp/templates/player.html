@@ -166,9 +166,16 @@
         <h2 style="margin:0">Ban from the group</h2>
         <span class="pill pill-hr">ADMIN</span>
       </div>
+      {% if bans_held %}
+      <p class="banner banner-warn">{{ icon("warning", 18) }}
+        <span><strong>Bans are on hold.</strong> This files the Ban log and
+          records the ban, but nothing is sent to VRChat — you will still need
+          to ban them in-game yourself for now.</span></p>
+      {% else %}
       <p class="dim">Files a Ban log and queues the group ban. It goes out as
         soon as a moderator holding <code>group-bans-manage</code> is signed
         in — which may be right now, or when the next one arrives.</p>
+      {% endif %}
       <form method="post" action="/player/{{ user_id }}/ban" class="row-form"
             data-once
             onsubmit="return confirm('Ban {{ display }} from the group?')">

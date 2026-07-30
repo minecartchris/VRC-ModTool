@@ -97,9 +97,15 @@ class GroupWorker:
     def stop(self) -> None:
         self._stop.set()
 
+    def holding(self, kind: str) -> bool:
+        """Whether this kind of action is queued but deliberately not sent."""
+        return kind == "ban" and bool(self.cfg.get("hold_bans"))
+
     def status(self) -> dict:
         open_rows = self.db.group_actions(open_only=True, limit=500)
         return {"waiting": len(open_rows),
+                "held": sum(1 for r in open_rows if self.holding(r["kind"])),
+                "bans_held": bool(self.cfg.get("hold_bans")),
                 "bans": sum(1 for r in open_rows if r["kind"] == "ban"),
                 "invites": sum(1 for r in open_rows if r["kind"] == "invite"),
                 "last_run": self.last_run,
@@ -129,6 +135,11 @@ class GroupWorker:
         for n, row in enumerate(due[:BATCH]):
             if self._stop.is_set():
                 break
+            if self.holding(row["kind"]):
+                # Left exactly as it is: not attempted, not deferred, not
+                # counted as a try. The row is the record of what would have
+                # happened, and releasing the hold should find it untouched.
+                continue
             if n and clients:
                 self._stop.wait(SPACING)      # pace, so VRChat doesn't 429
             if not clients:

@@ -53,6 +53,12 @@ DEFAULTS = {
     # `group-bans-manage` is signed in. Off by default: it acts on a real
     # person from an automated rule, so a deployment has to ask for it.
     "auto_ban_overage": False,
+    # Queue the bans but do not carry them out. Everything an overage kick
+    # would ban is recorded and visible on the Admin page, and nothing is sent
+    # to VRChat — the way to watch what the rule *would* do to real people
+    # before letting it. Turning this off later releases the whole backlog, so
+    # look at it first.
+    "hold_bans": False,
     # Invite anyone a moderator verifies as in-range, if they are not already
     # in the group. Needs `group-invites-manage`.
     "auto_invite_verified": False,

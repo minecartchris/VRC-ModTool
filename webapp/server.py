@@ -547,7 +547,9 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             tagged=bool(note_word and note_word in note.lower()),
             staff=database.all_staff().get(user_id),
             history=history, latest_check=latest.get(user_id),
-            verdicts=agecheck.VERDICTS)
+            verdicts=agecheck.VERDICTS,
+            # So the Ban button can say plainly that nothing will be sent yet.
+            bans_held=bool(cfg.get("hold_bans")))
 
     # ---------------- kick log (manual) ----------------
     @app.get("/kick-log", response_class=HTMLResponse)

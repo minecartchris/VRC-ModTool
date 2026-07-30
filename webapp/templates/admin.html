@@ -120,9 +120,19 @@
   <p class="dim">This server has no VRChat account of its own — it acts through
     whoever is signed in. An action raised when nobody with the permission is
     online waits here and goes out the moment one arrives. Nothing is dropped.</p>
+
+  {% if queue_status.bans_held %}
+  <p class="banner banner-warn" style="margin-top:12px">{{ icon("warning", 18) }}
+    <span><strong>Bans are on hold.</strong> They are being recorded but not
+      sent to VRChat — {{ queue_status.held }} waiting. This is what the rule
+      <em>would</em> do; read it before releasing. Clearing
+      <code>hold_bans</code> lets the whole backlog go at once, so cancel
+      anything below that shouldn't happen first.</span></p>
+  {% endif %}
   <ul class="list" style="margin-top:12px">
     <li>{{ icon("block", 18) }} Auto-ban an overage kick's target:
-      <strong>{{ "on" if auto_ban else "off" }}</strong>
+      <strong>{{ ("queued, held" if queue_status.bans_held else "on")
+                 if auto_ban else "off" }}</strong>
       <span class="dim" style="margin-left:auto">{{ act_group or "no group configured" }}</span></li>
     <li>{{ icon("group", 18) }} Auto-invite anyone verified in range:
       <strong>{{ "on" if auto_invite else "off" }}</strong></li>
@@ -145,6 +155,8 @@
               <div class="uid">by {{ q.done_by }} · {{ fmt_ago(q.done_at) }}</div>
             {% elif q.cancelled_at %}
               <span class="pill pill-mut">cancelled</span>
+            {% elif q.kind == "ban" and queue_status.bans_held %}
+              <span class="pill pill-warn" title="Recorded, deliberately not sent">held</span>
             {% else %}
               <span class="pill pill-warn">waiting</span>
               {% if q.attempts %}<div class="uid">{{ q.attempts }} tr{{ "y" if q.attempts == 1 else "ies" }}{% if q.last_error %} · {{ q.last_error[:60] }}{% endif %}</div>{% endif %}
