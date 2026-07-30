@@ -98,14 +98,20 @@ class GroupWorker:
         self._stop.set()
 
     def holding(self, kind: str) -> bool:
-        """Whether this kind of action is queued but deliberately not sent."""
-        return kind == "ban" and bool(self.cfg.get("hold_bans"))
+        """Whether this kind of action is queued but deliberately not sent.
+
+        `hold_bans` / `hold_invites`. A brake worth having on a backlog of
+        thousands: flip it and the queue stops sending without losing a row,
+        which is the difference between pausing a mistake and living with it.
+        """
+        return bool(self.cfg.get(f"hold_{kind}s"))
 
     def status(self) -> dict:
         open_rows = self.db.group_actions(open_only=True, limit=500)
         return {"waiting": len(open_rows),
                 "held": sum(1 for r in open_rows if self.holding(r["kind"])),
                 "bans_held": bool(self.cfg.get("hold_bans")),
+                "invites_held": bool(self.cfg.get("hold_invites")),
                 "bans": sum(1 for r in open_rows if r["kind"] == "ban"),
                 "invites": sum(1 for r in open_rows if r["kind"] == "invite"),
                 "last_run": self.last_run,

@@ -135,7 +135,8 @@
                  if auto_ban else "off" }}</strong>
       <span class="dim" style="margin-left:auto">{{ act_group or "no group configured" }}</span></li>
     <li>{{ icon("group", 18) }} Auto-invite anyone verified in range:
-      <strong>{{ "on" if auto_invite else "off" }}</strong></li>
+      <strong>{{ ("queued, held" if queue_status.invites_held else "on")
+                 if auto_invite else "off" }}</strong></li>
   </ul>
 
   {% if queue %}
@@ -155,7 +156,8 @@
               <div class="uid">by {{ q.done_by }} · {{ fmt_ago(q.done_at) }}</div>
             {% elif q.cancelled_at %}
               <span class="pill pill-mut">cancelled</span>
-            {% elif q.kind == "ban" and queue_status.bans_held %}
+            {% elif (q.kind == "ban" and queue_status.bans_held)
+                    or (q.kind == "invite" and queue_status.invites_held) %}
               <span class="pill pill-warn" title="Recorded, deliberately not sent">held</span>
             {% else %}
               <span class="pill pill-warn">waiting</span>

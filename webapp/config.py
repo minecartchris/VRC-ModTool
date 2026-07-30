@@ -62,6 +62,9 @@ DEFAULTS = {
     # Invite anyone a moderator verifies as in-range, if they are not already
     # in the group. Needs `group-invites-manage`.
     "auto_invite_verified": False,
+    # The same brake for invites. Chiefly a stop button for a large backfill:
+    # set it and the queue stops sending, keeping every row for later.
+    "hold_invites": False,
     # Actions that are logged but not announced, e.g. ["Warn"] where warns are
     # routine and would drown the channel. Only the Discord post is skipped:
     # the incident, the age check and the Kick Log page are unaffected.
