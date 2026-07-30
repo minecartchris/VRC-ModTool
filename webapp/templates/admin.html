@@ -110,6 +110,68 @@
 </section>
 
 <section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Bans &amp; invites waiting</h2>
+    <span class="dim">
+      {{ queue_status.waiting }} waiting ·
+      {{ queue_status.providers }} signed-in session{{ "" if queue_status.providers == 1 else "s" }} to try
+    </span>
+  </div>
+  <p class="dim">This server has no VRChat account of its own — it acts through
+    whoever is signed in. An action raised when nobody with the permission is
+    online waits here and goes out the moment one arrives. Nothing is dropped.</p>
+  <ul class="list" style="margin-top:12px">
+    <li>{{ icon("block", 18) }} Auto-ban an overage kick's target:
+      <strong>{{ "on" if auto_ban else "off" }}</strong>
+      <span class="dim" style="margin-left:auto">{{ act_group or "no group configured" }}</span></li>
+    <li>{{ icon("group", 18) }} Auto-invite anyone verified in range:
+      <strong>{{ "on" if auto_invite else "off" }}</strong></li>
+  </ul>
+
+  {% if queue %}
+  <div class="table-wrap" style="margin-top:16px">
+    <table>
+      <thead><tr><th>What</th><th>Who</th><th>Why</th><th>State</th><th></th></tr></thead>
+      <tbody>
+        {% for q in queue %}
+        <tr>
+          <td><span class="pill {{ 'v-under' if q.kind == 'ban' else 'pill-ok' }}">{{ q.kind }}</span></td>
+          <td><a href="/player/{{ q.user_id }}">{{ q.user_name or q.user_id }}</a>
+            <div class="uid">asked by {{ q.asked_by or "the system" }} · {{ fmt_ago(q.created_at) }}</div></td>
+          <td class="note">{{ q.reason }}</td>
+          <td class="nowrap">
+            {% if q.done_at %}
+              <span class="pill st-reported">done</span>
+              <div class="uid">by {{ q.done_by }} · {{ fmt_ago(q.done_at) }}</div>
+            {% elif q.cancelled_at %}
+              <span class="pill pill-mut">cancelled</span>
+            {% else %}
+              <span class="pill pill-warn">waiting</span>
+              {% if q.attempts %}<div class="uid">{{ q.attempts }} tr{{ "y" if q.attempts == 1 else "ies" }}{% if q.last_error %} · {{ q.last_error[:60] }}{% endif %}</div>{% endif %}
+            {% endif %}
+          </td>
+          <td class="num">
+            {% if not q.done_at and not q.cancelled_at %}
+            <form method="post" action="/admin/queue/{{ q.id }}/cancel"
+                  onsubmit="return confirm('Drop this queued {{ q.kind }}?')">
+              <button class="btn-sm" type="submit">Cancel</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="dim" style="margin-top:12px">Nothing queued.</p>
+  {% endif %}
+  {% if queue_status.last_error %}
+  <p class="dim" style="margin-top:12px">Last problem: {{ queue_status.last_error }}</p>
+  {% endif %}
+</section>
+
+<section class="card">
   <h2>What admins can do</h2>
   <ul class="list">
     <li>{{ icon("group", 18) }} Appoint and remove other admins</li>

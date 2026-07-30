@@ -185,6 +185,33 @@ class VRChatAPI:
         r.raise_for_status()
         return r.json()
 
+    def group_member(self, group_id: str, user_id: str) -> dict | None:
+        """This user's membership of a group, or None if they are not in it.
+
+        404 is the ordinary "not a member" answer, not a failure — everything
+        else is left to raise, so a permission problem or an outage is never
+        mistaken for an absent member and acted on.
+        """
+        r = self.s.get(f"{API}/groups/{group_id}/members/{user_id}", timeout=15)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()
+
+    def invite_to_group(self, group_id: str, user_id: str) -> dict:
+        """Invite a user to a group. Needs `group-invites-manage`."""
+        r = self.s.post(f"{API}/groups/{group_id}/invites",
+                        json={"userId": user_id}, timeout=15)
+        r.raise_for_status()
+        return r.json() if r.content else {}
+
+    def ban_from_group(self, group_id: str, user_id: str) -> dict:
+        """Ban a user from a group. Needs `group-bans-manage`."""
+        r = self.s.post(f"{API}/groups/{group_id}/bans",
+                        json={"userId": user_id}, timeout=15)
+        r.raise_for_status()
+        return r.json() if r.content else {}
+
     def update_user_note(self, target_user_id: str, note: str) -> dict:
         """Set (replace) your private note on a user. Read the existing note
         first and merge if you want to append rather than overwrite."""

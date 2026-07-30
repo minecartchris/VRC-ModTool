@@ -46,6 +46,16 @@ DEFAULTS = {
     "discord_webhook_url": "",
     # Second channel for age removals, mirroring that tool's behaviour.
     "overaged_webhook_url": "",
+    # The group people are invited to and banned from. Empty falls back to
+    # `roster_group`, which is normally the same group again.
+    "action_group": "",
+    # Ban an overage kick's target from the group, once a moderator holding
+    # `group-bans-manage` is signed in. Off by default: it acts on a real
+    # person from an automated rule, so a deployment has to ask for it.
+    "auto_ban_overage": False,
+    # Invite anyone a moderator verifies as in-range, if they are not already
+    # in the group. Needs `group-invites-manage`.
+    "auto_invite_verified": False,
     # Actions that are logged but not announced, e.g. ["Warn"] where warns are
     # routine and would drown the channel. Only the Discord post is skipped:
     # the incident, the age check and the Kick Log page are unaffected.
@@ -56,9 +66,11 @@ DEFAULTS = {
     # own on top, stored per account.
     "common_reasons": [
         "Age Baiting", "Avatar", "Ban Evasion", "Cat Calling",
-        "Disrespect Staff", "Harassment", "Inappropriate Comments", "Overaged",
-        "Racist Remarks", "Refused Age Check", "Refusing Requests From Mod",
-        "Repeated use of slur", "Sexual Comments", "Spamming", "Underaged",
+        "Disrespect Staff", "Harassment", "Inappropriate Comments",
+        "Loud audio", "Microphone spam", "Overaged", "Racist Remarks",
+        "Refused Age Check", "Refusing Requests From Mod",
+        "Repeated use of slur", "Said slur", "Sexual Comments", "Spamming",
+        "Underaged",
     ],
     # Tail this machine's VRChat log for the instance roster, so Screening
     # works without the desktop app running. Ignored automatically when

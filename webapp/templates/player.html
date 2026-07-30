@@ -159,6 +159,28 @@
         <button class="btn-sm btn-primary" name="verdict" value="in_range">In range</button>
       </form>
     </section>
+
+    {% if am_admin and user_id.startswith("usr_") %}
+    <section class="card">
+      <div class="card-head">
+        <h2 style="margin:0">Ban from the group</h2>
+        <span class="pill pill-hr">ADMIN</span>
+      </div>
+      <p class="dim">Files a Ban log and queues the group ban. It goes out as
+        soon as a moderator holding <code>group-bans-manage</code> is signed
+        in — which may be right now, or when the next one arrives.</p>
+      <form method="post" action="/player/{{ user_id }}/ban" class="row-form"
+            data-once
+            onsubmit="return confirm('Ban {{ display }} from the group?')">
+        <input type="hidden" name="name" value="{{ display }}">
+        <input type="hidden" name="next" value="{{ current_url }}">
+        <input name="reason" class="grow" maxlength="140"
+               placeholder="Why — this goes in the log and the Discord post">
+        <button class="btn-danger" type="submit">
+          {{ icon("block", 16) }} Ban</button>
+      </form>
+    </section>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

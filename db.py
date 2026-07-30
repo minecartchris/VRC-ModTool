@@ -221,6 +221,35 @@ CREATE TABLE IF NOT EXISTS agent_pairings (
     claimed_at  REAL                -- when the agent collected the key
 );
 
+-- Group actions waiting on somebody's VRChat permissions: a ban to place, an
+-- invite to send. The server holds no VRChat account of its own — it borrows a
+-- signed-in moderator's live session — so an action raised at 4am, when nobody
+-- with the permission is online, waits here instead of being lost.
+--
+-- Nothing is ever dropped: a failure reschedules rather than gives up, and the
+-- row records who asked for it and why, so a ban can always be traced back to
+-- the check that caused it.
+CREATE TABLE IF NOT EXISTS group_actions (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT,        -- ban | invite
+    group_id    TEXT,
+    user_id     TEXT,
+    user_name   TEXT,
+    reason      TEXT,
+    incident_id TEXT,
+    asked_by    TEXT,        -- display name, for the audit trail
+    asked_by_id TEXT,
+    created_at  REAL,
+    next_try_at REAL,        -- earliest retry; 0 means "as soon as possible"
+    attempts    INTEGER DEFAULT 0,
+    last_error  TEXT,
+    done_at     REAL,
+    done_by     TEXT,        -- whose permissions finally carried it out
+    cancelled_at REAL
+);
+CREATE INDEX IF NOT EXISTS ix_group_actions_open
+    ON group_actions(done_at, cancelled_at, next_try_at);
+
 -- Per-account UI choices, e.g. whether the Pending page shows other people's
 -- kicks. Server-side rather than in the browser so the choice follows the
 -- moderator between their PC and their phone.
@@ -769,6 +798,70 @@ class Database:
         """Record that a key just reported, so its owner can see it working."""
         self._exec("UPDATE agent_keys SET last_used=? WHERE roster_key=?",
                    (time.time(), key))
+
+    # ---------------- queued group actions ----------------
+    def queue_group_action(self, kind: str, *, group_id: str, user_id: str,
+                           user_name: str = "", reason: str = "",
+                           incident_id: str = "", asked_by: str = "",
+                           asked_by_id: str = "") -> dict | None:
+        """Queue a ban or invite. Returns the row, or None if already queued.
+
+        One open action per person per kind: an overage kick that lands twice,
+        or a moderator clicking Ban again while the first is still waiting for
+        somebody with the permission, must not queue two.
+        """
+        if not user_id:
+            return None
+        existing = self._one(
+            "SELECT * FROM group_actions WHERE kind=? AND user_id=? "
+            "AND group_id=? AND done_at IS NULL AND cancelled_at IS NULL",
+            (kind, user_id, group_id))
+        if existing:
+            return None
+        row = {"id": new_id(), "kind": kind, "group_id": group_id,
+               "user_id": user_id, "user_name": user_name or "",
+               "reason": reason or "", "incident_id": incident_id or "",
+               "asked_by": asked_by or "", "asked_by_id": asked_by_id or "",
+               "created_at": time.time(), "next_try_at": 0.0, "attempts": 0,
+               "last_error": ""}
+        cols = ", ".join(row)
+        self._exec(f"INSERT INTO group_actions ({cols}) "
+                   f"VALUES ({', '.join('?' for _ in row)})",
+                   tuple(row.values()))
+        return row
+
+    def due_group_actions(self, limit: int = 20) -> list[dict]:
+        rows = self._query(
+            "SELECT * FROM group_actions WHERE done_at IS NULL "
+            "AND cancelled_at IS NULL AND next_try_at <= ? "
+            "ORDER BY created_at LIMIT ?", (time.time(), limit))
+        return [dict(r) for r in rows]
+
+    def group_actions(self, *, open_only: bool = False,
+                      limit: int = 100) -> list[dict]:
+        where = ("WHERE done_at IS NULL AND cancelled_at IS NULL"
+                 if open_only else "")
+        rows = self._query(
+            f"SELECT * FROM group_actions {where} "
+            "ORDER BY done_at IS NULL DESC, created_at DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
+
+    def finish_group_action(self, action_id: str, done_by: str) -> None:
+        self._exec("UPDATE group_actions SET done_at=?, done_by=?, "
+                   "last_error='' WHERE id=?",
+                   (time.time(), done_by or "", action_id))
+
+    def defer_group_action(self, action_id: str, error: str,
+                           retry_in: float) -> None:
+        """Record a failure and try again later. Never gives up."""
+        self._exec(
+            "UPDATE group_actions SET attempts=attempts+1, last_error=?, "
+            "next_try_at=? WHERE id=?",
+            (str(error)[:200], time.time() + retry_in, action_id))
+
+    def cancel_group_action(self, action_id: str) -> None:
+        self._exec("UPDATE group_actions SET cancelled_at=? WHERE id=?",
+                   (time.time(), action_id))
 
     # ---------------- per-account preferences ----------------
     def pref(self, user_id: str, name: str, default: str = "") -> str:

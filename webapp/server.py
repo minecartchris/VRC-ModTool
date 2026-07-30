@@ -30,6 +30,7 @@ from webapp import config as webconfig
 from webapp import discord
 from webapp.audit import AuditWatcher
 from webapp.auth import AuthError, SessionManager, staff_groups, token_hash
+from webapp.groupwork import GroupWorker
 from webapp.roster import LOCAL_CLIENT, LocalRosterPublisher
 
 SESSION_COOKIE = "modsession"
@@ -73,6 +74,12 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                          interval=float(cfg.get("audit_poll_seconds", 60) or 60))
     audit.start()
     app.state.audit = audit
+
+    # Bans and invites wait here for a moderator whose VRChat permissions can
+    # carry them out — see webapp/groupwork.py.
+    groupwork = GroupWorker(database, cfg, sessions)
+    groupwork.start()
+    app.state.groupwork = groupwork
 
     app.mount("/static", StaticFiles(directory=str(HERE / "static")),
               name="static")
@@ -128,6 +135,39 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         if hides_others(sess["user_id"]):
             rows = [a for a in rows if a["actor_id"] == sess["user_id"]]
         return len(rows)
+
+    def action_group() -> str:
+        """The group invites and bans apply to."""
+        return ((cfg.get("action_group") or "").strip()
+                or (cfg.get("roster_group") or "").strip())
+
+    def queue_ban(target: dict, *, reason: str, sess: dict,
+                  incident_id: str = "") -> None:
+        """Ask for a group ban. Carried out when someone able to is signed in."""
+        group = action_group()
+        if not group or not target.get("user_id"):
+            return
+        database.queue_group_action(
+            "ban", group_id=group, user_id=target["user_id"],
+            user_name=target.get("name", ""), reason=reason,
+            incident_id=incident_id, asked_by=sess.get("name", ""),
+            asked_by_id=sess.get("user_id", ""))
+
+    def queue_invite_if_verified(verdict: str, *, user_id: str, name: str,
+                                 sess: dict) -> None:
+        """An in-range verdict is also a decision that they belong here.
+
+        Membership is checked when the invite is actually sent, not now — by
+        then they may have joined on their own.
+        """
+        group = action_group()
+        if (verdict != "in_range" or not user_id or not group
+                or not cfg.get("auto_invite_verified")):
+            return
+        database.queue_group_action(
+            "invite", group_id=group, user_id=user_id, user_name=name,
+            reason="verified in range", asked_by=sess.get("name", ""),
+            asked_by_id=sess.get("user_id", ""))
 
     def is_admin(user_id: str) -> bool:
         """Admin on top of being a moderator, not instead of it.
@@ -381,6 +421,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             world_name=world_name, world_id=world_id, instance_id=instance_id,
             checked_by=sess["name"], checked_by_id=sess["user_id"],
             source="web")
+        queue_invite_if_verified(verdict, user_id=user_id.strip(),
+                                 name=name.strip(), sess=sess)
         return RedirectResponse(back, status_code=303)
 
     @app.post("/age-checks/{check_id}/delete")
@@ -426,6 +468,18 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         database.upsert_incident(incident)
 
         verdict = agecheck.verdict_for_reason(reason)
+        if verdict == "over" and cfg.get("auto_ban_overage"):
+            # The group's rule: an adult kicked from a teen group is banned,
+            # not merely removed. Queued rather than done here, because the
+            # moderator filing this may not be the one holding the permission.
+            for t in targets:
+                if t.get("user_id"):
+                    database.queue_group_action(
+                        "ban", group_id=action_group(), user_id=t["user_id"],
+                        user_name=t.get("name", ""),
+                        reason=f"{action} — {reason}"[:160],
+                        incident_id=incident["id"], asked_by=moderator,
+                        asked_by_id=moderator_id)
         if verdict:
             age = age_hint if age_hint else agecheck.age_in_reason(reason)
             for t in targets:
@@ -544,13 +598,13 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     @app.post("/kick-log/shortcut")
     def kick_log_add_shortcut(request: Request, reason: str = Form(""),
-                              remove: str = Form("")):
+                              remove: str = Form(""), next: str = Form("")):
         sess = require(request)
         if remove:
             database.remove_user_reason(sess["user_id"], remove)
         else:
             database.add_user_reason(sess["user_id"], reason)
-        return RedirectResponse("/kick-log", status_code=303)
+        return RedirectResponse(_safe_next(next, "/settings"), status_code=303)
 
     @app.get("/api/lookup-user")
     def lookup_user(request: Request, q: str = ""):
@@ -766,6 +820,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             database, name=name, user_id=user_id, verdict="in_range",
             checked_by=sess["name"], checked_by_id=sess["user_id"],
             source="web", note=f"tagged '{word}' in VRChat note")
+        queue_invite_if_verified("in_range", user_id=user_id, name=name,
+                                 sess=sess)
         return RedirectResponse(back, status_code=303)
 
     # ---------------- your account ----------------
@@ -773,6 +829,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     def settings(request: Request):
         sess = require(request)
         return page(request, "settings.html", session=sess,
+                    my_reasons=database.user_reasons(sess["user_id"]),
                     my_keys=database.agent_keys(sess["user_id"]),
                     agent_exe=_agent_exe(cfg),
                     base_url=_public_base(request, cfg))
@@ -831,7 +888,42 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             # tool has to have seen the account to know its id is real.
             candidates=[u for u in database.known_users()
                         if u["user_id"] not in {a["user_id"] for a in admins}],
-            keys=database.agent_keys())
+            keys=database.agent_keys(),
+            queue=database.group_actions(limit=40),
+            queue_status=groupwork.status(),
+            auto_ban=bool(cfg.get("auto_ban_overage")),
+            auto_invite=bool(cfg.get("auto_invite_verified")),
+            act_group=action_group())
+
+    @app.post("/admin/queue/{action_id}/cancel")
+    def admin_queue_cancel(request: Request, action_id: str):
+        sess = require(request)
+        if is_admin(sess["user_id"]):
+            database.cancel_group_action(action_id)
+        return RedirectResponse("/admin", status_code=303)
+
+    @app.post("/player/{user_id}/ban")
+    def player_ban(request: Request, user_id: str, name: str = Form(""),
+                   reason: str = Form(""), next: str = Form("")):
+        """Ban from the group, and log it. Admins only.
+
+        The ban is queued rather than attempted here: whoever is filing it may
+        not be the one holding `group-bans-manage`, and a ban that has to wait
+        ten minutes for the right person to sign in is better than one that
+        fails silently at the moment of clicking.
+        """
+        sess = require(request)
+        back = _safe_next(next, f"/player/{user_id}")
+        if not is_admin(sess["user_id"]) or not _user_id_from(user_id):
+            return RedirectResponse(back, status_code=303)
+        reason = reason.strip() or "Banned by a moderator"
+        target = {"name": name.strip() or user_id, "user_id": user_id}
+        incident = file_moderation_log(
+            action="Ban", reason=reason, targets=[target],
+            moderator=sess["name"], moderator_id=sess["user_id"], origin="web")
+        queue_ban(target, reason=reason, sess=sess,
+                  incident_id=incident["id"])
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/admin/admins")
     def admin_admins(request: Request, user_id: str = Form(""),

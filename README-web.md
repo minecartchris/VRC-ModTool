@@ -283,6 +283,8 @@ python run_web.py --host 0.0.0.0
 | `agent_pairings` | short-lived pairing codes, single-use |
 | `known_users` | everyone who has signed in, so admins can be appointed later |
 | `admins` | who can appoint admins, revoke any agent, and edit or delete a log |
+| `group_actions` | bans and invites waiting for somebody's VRChat permissions |
+| `user_prefs` | per-account UI choices, e.g. hiding other people's prompts |
 
 Your VRChat auth cookie lives in server memory only, for as long as the process
 runs. Restart the server and you stay signed in for browsing records, but
@@ -521,8 +523,9 @@ age check if the reason mentions overage/underage, and the Discord embed —
 because both call the same helper.
 
 **Personal shortcuts.** Anyone can add reason chips to their own account; they
-appear on the Kick Log and the audit prompt, and nobody else sees them. Stored
-in `user_reasons`, keyed by VRChat user id.
+appear on the Kick Log and the audit prompt, and nobody else sees them. Managed
+on your settings page — they are an account setting, not part of filing a log —
+and stored in `user_reasons`, keyed by VRChat user id.
 
 ## Your settings, and personal roster keys
 
@@ -637,6 +640,53 @@ sign-in and — unlike `web_sessions` — never purged.
 That is the backstop against the last admin removing themselves and locking
 the tool's administration out of its own settings.
 
+## Bans and invites, done with somebody's permissions
+
+The server has no VRChat account. Everything it does *inside* VRChat is done
+through a moderator who is signed in here — the same borrowing the audit-log
+watcher already relies on.
+
+That makes timing the problem. An overage kick at 3am should be followed by a
+ban, but the ban needs someone holding `group-bans-manage` with a live session.
+So actions queue in `group_actions` and a worker drains them whenever such a
+session exists. The moment a moderator with the permission signs in, the
+backlog goes out.
+
+```json
+"action_group": "grp_…",           // empty falls back to roster_group
+"auto_ban_overage": true,          // ban the target of an overage kick
+"auto_invite_verified": true       // invite anyone verified in range
+```
+
+| | Needs | When it fires |
+|---|---|---|
+| Ban | `group-bans-manage` | an overage kick, or an admin pressing **Ban** on a player page |
+| Invite | `group-invites-manage` | an in-range verdict, if they aren't in the group already |
+
+Both default to **off**. They act on a real person from an automated rule, so a
+deployment has to ask for them rather than inherit them.
+
+**Nothing is dropped and nothing expires.** A VRChat error reschedules the row
+15 minutes later and keeps the message; *nobody with the permission is signed
+in* reschedules immediately, because the thing being waited for is somebody
+arriving. A 403 means that particular moderator lacks the permission, so the
+next one is tried and that session isn't asked again. The Admin page lists the
+queue — waiting, done, and whose permissions carried each one out — and can
+cancel a row.
+
+Membership is checked when an invite is *sent*, not when it is queued: between
+a verdict and a moderator being available the person may well have joined on
+their own, and inviting an existing member is noise for them.
+
+**Banning by hand** is admin-only, on the player page. It files a Ban log —
+same incident, same Discord embed as any other — and queues the ban itself.
+
+One honest limit: "a moderator is signed in" means their VRChat session is live
+*in this process*. Sessions survive a restart, but the API client behind one is
+rebuilt on that moderator's next request, so after a restart the queue waits
+until somebody actually uses the panel. In practice that is minutes, and the
+queue is patient.
+
 ## Audit access is per-account
 
 The audit log is read with each **moderator's own** VRChat permissions, not a
@@ -681,3 +731,27 @@ Two deliberate details:
 Bio links are shown as their full URL and carry `rel="noopener noreferrer
 nofollow"`: they are attacker-controlled strings, so a moderator should see
 where one goes before deciding to follow it.
+
+## The moderator guide, and demo mode
+
+`docs/moderator-guide/` is the how-to for the people who use this rather than
+run it: one page per screen, in the order a shift actually touches them, with a
+screenshot of each.
+
+Every screenshot comes from **demo mode**, so the guide contains no real
+moderator, player or incident and can be handed to somebody who is not staff
+yet:
+
+```bash
+python tools/demo_server.py          # http://127.0.0.1:8788
+python tools/capture_guide_shots.py  # rewrites docs/moderator-guide/screenshots
+```
+
+`demo_server.py` serves the whole panel against a throwaway database in the
+temp directory, with the sign-in bypassed — it mints a session at startup and
+hands it to any browser that connects, as an admin — and a stub in place of
+VRChat, so it needs no credentials and makes no API calls. It binds 127.0.0.1,
+refuses to open the real `modtool.db`, and is not something to host.
+
+Changing what appears in the screenshots means editing the seed data at the top
+of `tools/demo_server.py` and rerunning both.
