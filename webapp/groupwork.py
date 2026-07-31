@@ -33,10 +33,18 @@ RETRY_AFTER = 900.0
 #: failure would.
 RETRY_RATE_LIMITED = 120.0
 
-#: Sent per pass, and how long to wait between them. A backlog of twenty
-#: invites going out shoulder to shoulder is exactly what earns a 429.
+#: Sent per pass *per usable session*, and how long to wait between sends.
+#: VRChat rate limits per account, so two moderators signed in is genuinely
+#: twice the throughput — the work is spread across them rather than piled on
+#: whoever happened to be first in the dictionary.
 BATCH = 5
+BATCH_CAP = 40
 SPACING = 2.0
+
+#: An account that just answered 429 is stood down for a while and the work
+#: goes to somebody else. Much better than parking the row: the backlog keeps
+#: moving on every other session.
+COOLING_FOR = 180.0
 
 #: VRChat's way of saying the action was unnecessary. Not a failure: the person
 #: is in the group, or has an invite sitting in their notifications, which is
@@ -88,6 +96,11 @@ class GroupWorker:
         #: them every 20 seconds. Cleared whenever the process restarts, which
         #: is also when someone's permissions might have changed.
         self._denied: dict[tuple[str, str], float] = {}
+        #: Sessions VRChat has just rate limited, and when they went quiet.
+        self._cooling: dict[str, float] = {}
+        #: Where to start in the session list, so consecutive actions do not
+        #: all land on the same account.
+        self._turn = 0
 
     # ---------------- lifecycle ----------------
     def start(self) -> None:
@@ -106,6 +119,17 @@ class GroupWorker:
         """
         return bool(self.cfg.get(f"hold_{kind}s"))
 
+    def usable(self, clients: dict, kind: str) -> list:
+        """Sessions worth asking right now, in rotated order."""
+        now = time.time()
+        live = [(tok, api) for tok, api in clients.items()
+                if now - self._denied.get((tok, kind), 0) >= DENIED_FOR
+                and now - self._cooling.get(tok, 0) >= COOLING_FOR]
+        if not live:
+            return []
+        start = self._turn % len(live)
+        return live[start:] + live[:start]
+
     def status(self) -> dict:
         open_rows = self.db.group_actions(open_only=True, limit=500)
         return {"waiting": len(open_rows),
@@ -116,7 +140,8 @@ class GroupWorker:
                 "invites": sum(1 for r in open_rows if r["kind"] == "invite"),
                 "last_run": self.last_run,
                 "last_error": self.last_error,
-                "providers": len(self._live_clients())}
+                "providers": len(self._live_clients()),
+                "sending_with": len(self.usable(self._live_clients(), "invite"))}
 
     # ---------------- the work ----------------
     def _live_clients(self) -> dict:
@@ -131,14 +156,17 @@ class GroupWorker:
 
     def run_once(self) -> int:
         """Attempt every action that is due. Returns how many went out."""
-        due = self.db.due_group_actions(limit=BATCH * 4)
+        due = self.db.due_group_actions(limit=BATCH_CAP * 2)
         if not due:
             self.last_run = time.time()
             return 0
 
         clients = self._live_clients()
+        # More sessions, more sending. One moderator's rate limit is not
+        # everybody's.
+        budget = min(BATCH_CAP, BATCH * max(1, len(clients)))
         done = 0
-        for n, row in enumerate(due[:BATCH]):
+        for n, row in enumerate(due[:budget]):
             if self._stop.is_set():
                 break
             if self.holding(row["kind"]):
@@ -159,14 +187,15 @@ class GroupWorker:
 
     def _attempt(self, row: dict, clients: dict) -> bool:
         last_error = "no signed-in moderator holds that permission"
-        now = time.time()
-        for token, api in clients.items():
-            # Denials expire: somebody's group role can change while the
-            # process is up, and a 403 that turns out to have been transient
-            # should not sideline that account until the next restart.
-            denied_at = self._denied.get((token, row["kind"]), 0)
-            if denied_at and now - denied_at < DENIED_FOR:
-                continue
+        order = self.usable(clients, row["kind"])
+        if not order:
+            self.db.defer_group_action(
+                row["id"],
+                "every signed-in session is rate limited or lacks the "
+                "permission", RETRY_RATE_LIMITED if self._cooling else
+                RETRY_NO_PROVIDER)
+            return False
+        for token, api in order:
             who = (getattr(api, "user", None) or {}).get("displayName", "?")
             try:
                 self._perform(api, row)
@@ -178,6 +207,13 @@ class GroupWorker:
                     self._denied[(token, row["kind"])] = time.time()
                     last_error = f"{who}: {text}"
                     continue
+                # 429 is this account being told to slow down. Stand it down
+                # and hand the same row straight to the next session, which
+                # has its own budget.
+                if "429" in text:
+                    self._cooling[token] = time.time()
+                    last_error = f"{who}: {text}"
+                    continue
                 # Anything else is about the action or VRChat itself, and
                 # another moderator would hit exactly the same wall.
                 wait = (RETRY_RATE_LIMITED if "429" in text else RETRY_AFTER)
@@ -185,9 +221,13 @@ class GroupWorker:
                 self.last_error = f"{who}: {text}"
                 return False
             self.db.finish_group_action(row["id"], who)
+            self._turn += 1          # next action starts with the next account
             return True
 
-        self.db.defer_group_action(row["id"], last_error, RETRY_NO_PROVIDER)
+        # Everybody available has now refused it.
+        self.db.defer_group_action(
+            row["id"], last_error,
+            RETRY_RATE_LIMITED if "429" in last_error else RETRY_NO_PROVIDER)
         return False
 
     def _perform(self, api, row: dict) -> None:
