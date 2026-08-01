@@ -74,10 +74,10 @@ DEFAULTS = {
     # reasons stay comparable between the two tools. Moderators can add their
     # own on top, stored per account.
     "common_reasons": [
-        "Age Baiting", "Avatar", "Ban Evasion", "Cat Calling",
-        "Disrespect Staff", "Harassment", "Inappropriate Comments",
-        "Loud audio", "Microphone spam", "Overaged", "Racist Remarks",
-        "Refused Age Check", "Refusing Requests From Mod",
+        "Age Baiting", "Avatar", "Ban Evasion", "Blocked or muted mod",
+        "Cat Calling", "Disrespect Staff", "Harassment",
+        "Inappropriate Comments", "Loud audio", "Microphone spam", "Overaged",
+        "Racist Remarks", "Refused Age Check", "Refusing Requests From Mod",
         "Repeated use of slur", "Said slur", "Sexual Comments", "Spamming",
         "Underaged",
     ],
