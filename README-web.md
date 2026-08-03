@@ -141,6 +141,38 @@ Set `"read_local_log": false` to stop the server reading its own log (it is
 skipped automatically where there is no VRChat log directory, e.g. a Linux
 host, so a hosted deployment needs no configuration).
 
+## Running a client just to report the roster
+
+**VRChat has no headless mode.** No dedicated build, no `-batchmode`; the wiki
+lists Unity's own arguments as unsupported. Nor would it help: the roster
+exists precisely because a real client is in the room, and the names come out
+of that client's log and nowhere else.
+
+`roster_host.py` gets as close as the client allows — VRChat minimised and
+throttled with its own documented launch options, and the agent beside it:
+
+```bash
+python roster_host.py                    # both, supervised
+python roster_host.py --fps 1            # quieter still
+python roster_host.py --no-launch        # agent beside a client you opened
+```
+
+| Option | Why |
+|---|---|
+| `--no-vr` | desktop mode, so SteamVR never starts |
+| `--fps=5` | the real lever — the frame cap is what costs a GPU |
+| `--process-priority=-2`, `--main-thread-priority=-2` | idle; yields to whatever you are actually doing |
+| `--affinity=3` | two CPU threads rather than all of them |
+| `--profile=1` | a separate login, so your own VRChat is untouched |
+
+Five frames a second at idle priority, minimised, is the difference between a
+busy GPU and a background task. It is not zero, and nothing can make it zero.
+
+Two things the launch options cannot do for you: **log in on that profile
+once**, and **set its graphics quality low once** — both live in the client and
+persist per profile. If VRChat exits, the agent is stopped with it rather than
+left reporting a room nobody is in; `--restart` relaunches instead.
+
 ## Code changes and staying signed in
 
 The server watches its own source and restarts when a `.py`, `.html`, `.css`
