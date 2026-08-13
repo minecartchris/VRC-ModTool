@@ -48,3 +48,8 @@ dist/
 build/
 *.spec
 agent_baked.py
+
+# ---- Misc ----
+*.zip
+test.py
+NEXT-UPDATE.md

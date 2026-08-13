@@ -16,6 +16,16 @@
   {% endfor %}
 </nav>
 
+<div class="card-head" style="margin-bottom:-4px">
+  <span class="dim">{{ people }} moderator{{ "" if people == 1 else "s" }} in
+    this period{% if not full %} · showing the top 10 of each{% endif %}</span>
+  <a class="btn-sm {{ 'btn-primary' if not full }}"
+     style="display:inline-block; padding:6px 12px"
+     href="/mod-log?days={{ days }}{% if action %}&action={{ action }}{% endif %}{% if who %}&who={{ who|urlencode }}{% endif %}{% if not full %}&full=1{% endif %}">
+    {% if full %}{{ icon("group", 14) }} Show the top 10
+    {% else %}{{ icon("group", 14) }} Show everyone{% endif %}</a>
+</div>
+
 <div class="grid-3">
   {% for title, field, rows in boards %}
   <section class="card">
@@ -23,7 +33,7 @@
       <h2 style="margin:0;font-size:18px;line-height:24px">{{ title }}</h2>
       <span class="dim">
         {%- if field == "checks" %}{{ rows|sum(attribute="checks") }} total
-        {%- else %}{{ counts[field] }} total{% endif %}</span>
+        {%- else %}{{ totals[field] }} total{% endif %}</span>
     </div>
     {% if rows %}
     <ul class="list">
@@ -33,14 +43,13 @@
         {% if m.user_id %}<a href="/mod-log?who={{ m.user_id|urlencode }}&days={{ days }}">{{ m.name }}</a>
         {% else %}{{ m.name }}{% endif %}
         {% if m.user_id == session.user_id %}<span class="pill pill-ok">you</span>{% endif %}
-        <strong style="margin-left:auto">{{ m[field] }}</strong>
+        <strong style="margin-left:auto"
+                {% if not m[field] %}class="dim"{% endif %}>{{ m[field] }}</strong>
       </li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="dim">
-      {%- if field == "Ban" and not sees_all_bans %}None of your own in this period.
-      {%- else %}Nothing in this period.{% endif %}</p>
+    <p class="dim">Nothing in this period.</p>
     {% endif %}
   </section>
   {% endfor %}
@@ -49,8 +58,8 @@
 <p class="dim">Ranked separately on purpose: working through a room of age
   checks and kicking somebody are different jobs, and one combined total makes
   the quieter one look like less work.
-  {%- if not sees_all_bans %} Bans count only your own — admins see all of
-  them.{% endif %}</p>
+  {%- if not sees_all_bans %} Ban <em>counts</em> are everyone's; the entries
+  themselves are visible to admins and to whoever placed them.{% endif %}</p>
 
 <section class="card" style="display:flex;flex-direction:column;gap:16px">
   <div class="card-head">

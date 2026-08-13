@@ -877,14 +877,14 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                             media_type="application/octet-stream")
 
     # ---------------- moderation log & leaderboard ----------------
-    def visible_logs(sess: dict) -> list[dict]:
-        """Every kick, warn and ban this moderator is allowed to see.
+    def all_logs(sess: dict) -> list[dict]:
+        """Every kick, warn and ban, with who filed it, unfiltered.
 
-        Bans are narrower than the rest: an admin sees all of them, everybody
-        else sees only their own. A ban is the heaviest thing this group does
-        to somebody, and who has been banned is not general staff reading.
+        This is what the leaderboards count. A ban *total* is not sensitive —
+        knowing a colleague placed three is ordinary team information — while
+        the entries themselves say who was banned and why, which is not.
         """
-        me, admin = sess["user_id"], is_admin(sess["user_id"])
+        me = sess["user_id"]
         out = []
         for inc in database.all_incidents():
             if inc["deleted"]:
@@ -896,18 +896,28 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                     # Rows filed before ids were recorded can only be matched
                     # on the name they were filed under.
                     else inc.get("reported_by") == sess["name"])
-            if action == "Ban" and not (admin or mine):
-                continue
             out.append({**inc, "action": action, "reason": _log_reason(inc),
                         "mine": mine})
         return out
 
+    def readable_logs(logs: list[dict], sess: dict) -> list[dict]:
+        """The entries this moderator may actually read.
+
+        Bans are narrower than the rest: an admin sees all of them, everybody
+        else sees only their own. A ban is the heaviest thing this group does
+        to somebody, and who has been banned is not general staff reading.
+        """
+        admin = is_admin(sess["user_id"])
+        return [inc for inc in logs
+                if inc["action"] != "Ban" or admin or inc["mine"]]
+
 
     @app.get("/mod-log", response_class=HTMLResponse)
     def mod_log(request: Request, action: str = "", who: str = "",
-                days: str = "30", q: str = ""):
+                days: str = "30", q: str = "", full: str = ""):
         sess = require(request)
-        rows = visible_logs(sess)
+        every = all_logs(sess)
+        rows = readable_logs(every, sess)
 
         window = {"7": 7, "30": 30, "90": 90}.get(days)
         since = time.time() - window * 86400 if window else 0
@@ -916,14 +926,23 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         # cannot be credited with bans they are not allowed to see. Totals
         # therefore differ between an admin and everybody else — deliberately.
         board: dict[str, dict] = {}
+        # Every log filed before ids were recorded carries only a display
+        # name, and almost all of the history is like that. Resolving the name
+        # back to an account keeps one person one row instead of splitting
+        # them into "before" and "after".
+        by_name = {(u["name"] or "").lower(): u["user_id"]
+                   for u in database.known_users() if u["name"]}
+        for staff_id, staff_row in database.all_staff().items():
+            by_name.setdefault((staff_row.get("name") or "").lower(), staff_id)
 
         def bucket(name: str, uid: str) -> dict:
+            uid = uid or by_name.get((name or "").lower(), "")
             key = uid or f"name:{name.lower()}"
             return board.setdefault(key, {
                 "name": name or "unknown", "user_id": uid,
                 "Kick": 0, "Warn": 0, "Ban": 0, "checks": 0, "total": 0})
 
-        for inc in rows:
+        for inc in every:
             if (inc["created_at"] or 0) < since:
                 continue
             who_row = bucket(inc["reported_by"], inc.get("reported_by_id", ""))
@@ -940,16 +959,22 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         # screening are different jobs — someone who works through a room of
         # age checks all night and never kicks anybody is not "behind" the
         # person who kicked four people, and one ranking says they are.
+        # Expanded, the boards list everyone who appears in the period at all,
+        # including a zero — "who has done none of this" is a fair question and
+        # a missing row does not answer it. Collapsed, the top ten with
+        # something to their name.
+        everyone = full == "1"
+
         def top(field: str) -> list[dict]:
-            rows = [r for r in board.values() if r[field]]
-            rows.sort(key=lambda r: (-r[field], r["name"].lower()))
-            return rows[:10]
+            ranked = list(board.values()) if everyone else [
+                r for r in board.values() if r[field]]
+            ranked.sort(key=lambda r: (-r[field], r["name"].lower()))
+            return ranked if everyone else ranked[:10]
 
         boards = [("Kicks", "Kick", top("Kick")),
                   ("Warns", "Warn", top("Warn")),
+                  ("Bans", "Ban", top("Ban")),
                   ("Age checks", "checks", top("checks"))]
-        if is_admin(sess["user_id"]) or board:
-            boards.insert(2, ("Bans", "Ban", top("Ban")))
 
         shown = [r for r in rows if (r["created_at"] or 0) >= since]
         if action in _LOG_ACTIONS:
@@ -963,12 +988,20 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             shown = [r for r in shown if needle in _incident_haystack(r)]
         shown.sort(key=lambda r: r["created_at"] or 0, reverse=True)
 
+        # The chips count what the list will show; the boards count what
+        # actually happened. For a non-admin those differ on bans, which is
+        # the point — the number is public, the entries are not.
         counts = {a: sum(1 for r in rows if r["action"] == a
+                         and (r["created_at"] or 0) >= since)
+                  for a in _LOG_ACTIONS}
+        totals = {a: sum(1 for r in every if r["action"] == a
                          and (r["created_at"] or 0) >= since)
                   for a in _LOG_ACTIONS}
         return page(request, "mod_log.html", session=sess,
                     boards=boards, rows=shown[:300], counts=counts,
+                    totals=totals,
                     action=action, who=who, days=days, q=q,
+                    full=everyone, people=len(board),
                     total_shown=len(shown),
                     # So the page can say why a moderator's ban column is
                     # empty rather than looking broken.
