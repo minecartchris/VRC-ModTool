@@ -343,6 +343,7 @@ web writes statuses, notes and age checks.
 | `/incidents`, `/incidents/{id}` | list/search, detail with evidence, notes, status, paste-ready report |
 | `/age-checks` | log + record a check |
 | `/screening` | live roster, filterable by verification state, with per-player verdict buttons and VRChat note tagging |
+| `/mod-log` | kicks, warns and bans, with leaderboards; bans filtered by who may see them |
 | `/settings` | your account, the agent download, your paired PCs |
 | `/admin` | admins, every paired agent, and revoking any of them |
 | `/pair/{code}` | approve an agent that is asking to report as you |
@@ -635,6 +636,29 @@ strictly less than the session cookie already in that browser.
 **Setting one up by hand** is still there, folded away, for a PC you cannot
 open a browser on: mint a key, paste it in. That is the path pairing exists to
 avoid, so it is not the default.
+
+## Mod Log and the leaderboards
+
+`/mod-log` is every kick, warn and ban — when, who did it, who it was done to,
+and why — with a search, an action filter, and a click on any moderator's name
+to see only theirs.
+
+**Bans are narrower than the rest.** An admin sees all of them; everybody else
+sees only the ones they filed themselves. A ban is the heaviest thing this
+group does to somebody, and who has been banned is not general staff reading.
+The filter is applied where the rows are gathered, so it governs the counts and
+the leaderboards too — a moderator cannot be credited with bans they are not
+allowed to see, and the page says so rather than looking broken.
+
+**One board per kind of work**, not a combined total: Kicks, Warns, Bans, Age
+checks, each ranked on its own over the chosen period. Someone who works
+through a room of age checks all night and never kicks anybody is not behind
+the person who kicked four people, and a single total says they are.
+
+Incidents now record `reported_by_id` as well as the moderator's display name.
+"My own bans" has to keep meaning the same person after a rename, and a name is
+not an identity. Rows filed before this fall back to matching on the name they
+carry, so existing history still attributes correctly.
 
 ## Admins
 

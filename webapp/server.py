@@ -467,7 +467,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             "world_name": "", "world_id": world_id, "instance_id": instance_id,
             "players": targets,
             "clip_path": "", "screenshot_path": "", "notes": "",
-            "status": "reported", "reported_by": moderator, "origin": origin,
+            "status": "reported", "reported_by": moderator,
+            "reported_by_id": moderator_id, "origin": origin,
         }
         database.upsert_incident(incident)
 
@@ -875,6 +876,104 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         return FileResponse(exe, filename=exe.name,
                             media_type="application/octet-stream")
 
+    # ---------------- moderation log & leaderboard ----------------
+    def visible_logs(sess: dict) -> list[dict]:
+        """Every kick, warn and ban this moderator is allowed to see.
+
+        Bans are narrower than the rest: an admin sees all of them, everybody
+        else sees only their own. A ban is the heaviest thing this group does
+        to somebody, and who has been banned is not general staff reading.
+        """
+        me, admin = sess["user_id"], is_admin(sess["user_id"])
+        out = []
+        for inc in database.all_incidents():
+            if inc["deleted"]:
+                continue
+            action = _log_action(inc)
+            if not action:
+                continue
+            mine = (inc.get("reported_by_id") == me if inc.get("reported_by_id")
+                    # Rows filed before ids were recorded can only be matched
+                    # on the name they were filed under.
+                    else inc.get("reported_by") == sess["name"])
+            if action == "Ban" and not (admin or mine):
+                continue
+            out.append({**inc, "action": action, "reason": _log_reason(inc),
+                        "mine": mine})
+        return out
+
+
+    @app.get("/mod-log", response_class=HTMLResponse)
+    def mod_log(request: Request, action: str = "", who: str = "",
+                days: str = "30", q: str = ""):
+        sess = require(request)
+        rows = visible_logs(sess)
+
+        window = {"7": 7, "30": 30, "90": 90}.get(days)
+        since = time.time() - window * 86400 if window else 0
+
+        # The leaderboard counts the same rows the log shows, so a moderator
+        # cannot be credited with bans they are not allowed to see. Totals
+        # therefore differ between an admin and everybody else — deliberately.
+        board: dict[str, dict] = {}
+
+        def bucket(name: str, uid: str) -> dict:
+            key = uid or f"name:{name.lower()}"
+            return board.setdefault(key, {
+                "name": name or "unknown", "user_id": uid,
+                "Kick": 0, "Warn": 0, "Ban": 0, "checks": 0, "total": 0})
+
+        for inc in rows:
+            if (inc["created_at"] or 0) < since:
+                continue
+            who_row = bucket(inc["reported_by"], inc.get("reported_by_id", ""))
+            who_row[inc["action"]] += 1
+            who_row["total"] += 1
+        for chk in database.all_age_checks():
+            if chk["deleted"] or (chk["created_at"] or 0) < since:
+                continue
+            who_row = bucket(chk["checked_by"], chk.get("checked_by_id", ""))
+            who_row["checks"] += 1
+            who_row["total"] += 1
+
+        # One board per kind of work, not a combined total. Kicking and
+        # screening are different jobs — someone who works through a room of
+        # age checks all night and never kicks anybody is not "behind" the
+        # person who kicked four people, and one ranking says they are.
+        def top(field: str) -> list[dict]:
+            rows = [r for r in board.values() if r[field]]
+            rows.sort(key=lambda r: (-r[field], r["name"].lower()))
+            return rows[:10]
+
+        boards = [("Kicks", "Kick", top("Kick")),
+                  ("Warns", "Warn", top("Warn")),
+                  ("Age checks", "checks", top("checks"))]
+        if is_admin(sess["user_id"]) or board:
+            boards.insert(2, ("Bans", "Ban", top("Ban")))
+
+        shown = [r for r in rows if (r["created_at"] or 0) >= since]
+        if action in _LOG_ACTIONS:
+            shown = [r for r in shown if r["action"] == action]
+        if who:
+            shown = [r for r in shown
+                     if r.get("reported_by_id") == who
+                     or r["reported_by"] == who]
+        if q:
+            needle = q.lower()
+            shown = [r for r in shown if needle in _incident_haystack(r)]
+        shown.sort(key=lambda r: r["created_at"] or 0, reverse=True)
+
+        counts = {a: sum(1 for r in rows if r["action"] == a
+                         and (r["created_at"] or 0) >= since)
+                  for a in _LOG_ACTIONS}
+        return page(request, "mod_log.html", session=sess,
+                    boards=boards, rows=shown[:300], counts=counts,
+                    action=action, who=who, days=days, q=q,
+                    total_shown=len(shown),
+                    # So the page can say why a moderator's ban column is
+                    # empty rather than looking broken.
+                    sees_all_bans=is_admin(sess["user_id"]))
+
     # ---------------- admin ----------------
     @app.get("/admin", response_class=HTMLResponse)
     def admin_page(request: Request):
@@ -1168,6 +1267,25 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 #: VRChat writes the owning group into the instance id itself, e.g.
 #: "73644~group(grp_7112…)~groupAccessType(public)~region(us)".
 _INSTANCE_GROUP = re.compile(r"~group\((grp_[0-9a-fA-F-]+)\)")
+
+
+#: Logs are stored as "Kick — reason"; the action is the part before the dash.
+_LOG_ACTIONS = ("Kick", "Warn", "Ban")
+
+
+def _log_action(inc: dict) -> str:
+    """Kick, Warn or Ban if this incident is a moderation log, else ""."""
+    trigger = (inc.get("trigger") or "").strip()
+    for action in _LOG_ACTIONS:
+        if trigger == action or trigger.startswith(f"{action} "):
+            return action
+    return ""
+
+
+def _log_reason(inc: dict) -> str:
+    trigger = (inc.get("trigger") or "").strip()
+    _, dash, rest = trigger.partition("—")
+    return (rest if dash else trigger).strip()
 
 
 def _instance_group(instance_id: str) -> str:

@@ -275,6 +275,10 @@ _ADDED_COLUMNS = {
         "updated_at": "REAL",
         "deleted": "INTEGER DEFAULT 0",
         "reported_by": "TEXT",
+        # Who filed it, by VRChat id rather than display name. Names change,
+        # and "show me my own bans" has to keep meaning the same person.
+        # Empty on rows filed before this existed; those fall back to the name.
+        "reported_by_id": "TEXT",
         "origin": "TEXT",
     },
     "web_sessions": {
@@ -291,7 +295,7 @@ _ADDED_COLUMNS = {
 _INCIDENT_FIELDS = (
     "created_at", "trigger", "transcript", "world_name", "world_id",
     "instance_id", "players", "clip_path", "screenshot_path", "notes",
-    "status", "reported_by", "origin", "deleted",
+    "status", "reported_by", "reported_by_id", "origin", "deleted",
 )
 _AGE_CHECK_FIELDS = (
     "user_id", "name", "verdict", "reported_age", "world_name", "world_id",
@@ -409,6 +413,7 @@ class Database:
             "notes": inc.get("notes", "") or "",
             "status": inc.get("status", "new") or "new",
             "reported_by": inc.get("reported_by", "") or "",
+            "reported_by_id": inc.get("reported_by_id", "") or "",
             "origin": inc.get("origin", "") or "",
             "deleted": int(inc.get("deleted", 0) or 0),
         }
@@ -426,6 +431,7 @@ class Database:
             "screenshot_path": r["screenshot_path"] or "",
             "notes": r["notes"] or "", "status": r["status"] or "new",
             "reported_by": r["reported_by"] or "",
+            "reported_by_id": r["reported_by_id"] or "",
             "origin": r["origin"] or "",
             "updated_at": r["updated_at"] or 0.0,
             "deleted": bool(r["deleted"]),
