@@ -60,6 +60,17 @@ BAN_PAGE = 100
 #: the first page or two, once it reaches entries it has already read.
 BAN_MAX_PAGES = 40
 
+#: What VRChat calls a group ban, as confirmed against this group's own log.
+#: Asking for it by name is what makes the backfill reach: unfiltered, a busy
+#: group's joins and leaves fill forty pages with about a week of history.
+BAN_EVENT = "group.user.ban"
+
+#: How often to read the log unfiltered anyway, as a check that the name
+#: above is still right. If VRChat renames the event, the filtered scan goes
+#: quiet and looks exactly like a group that has stopped banning people —
+#: this is what tells the difference.
+SWEEP_EVERY = 3600.0
+
 
 def is_ban(event_type: str) -> bool:
     """Whether this audit entry is somebody being banned from the group.
@@ -121,10 +132,10 @@ class AuditWatcher:
         self.queued = 0
         self.bans = 0
         self.ban_error = ""
-        #: Every eventType this has actually seen, counted. The ban scan reads
-        #: the log unfiltered, so this is a free record of what VRChat calls
-        #: things — worth showing, because it is the evidence that bans are
-        #: being recognised at all.
+        self._last_sweep = 0.0
+        #: Every eventType this has actually seen, counted by the hourly
+        #: unfiltered sweep — the evidence for what VRChat currently calls
+        #: things, and so for whether bans are being recognised at all.
         self.types_seen: dict[str, int] = {}
         #: Whose permissions are currently making this work, shown on /pending
         #: so it's obvious the feature depends on them staying signed in.
@@ -166,6 +177,7 @@ class AuditWatcher:
         queued = self._poll_prompts()
         try:
             self.bans += self._scan_bans()
+            self.bans += self._sweep_for_renamed_bans()
         except Exception as e:                        # never kill the poll
             self.ban_error = f"{type(e).__name__}: {e}"
         return queued
@@ -230,20 +242,11 @@ class AuditWatcher:
 
         # Only built if a ban actually turns up: most polls find none, and
         # this reads every player the tool has ever screened.
-        known: dict[str, str] = {}
-
-        def names() -> dict:
-            if not known:
-                known.update({uid: rec.get("name", "")
-                              for uid, rec in self.db.all_users().items()})
-                known.update({r["user_id"]: r["name"]
-                              for r in self.db.known_users() if r.get("name")})
-            return known
-
+        known: dict[str, str] | None = None
         recorded, newest, offset = 0, mark, 0
         for _ in range(BAN_MAX_PAGES if first_run else 4):
             page = self._fetch_with_any_session(n=BAN_PAGE, offset=offset,
-                                                event_types="")
+                                                event_types=BAN_EVENT)
             if page is None:
                 return recorded              # no session, or a real failure
             results = page.get("results") or []
@@ -265,7 +268,9 @@ class AuditWatcher:
                 newest = max(newest, created)
                 if created <= mark or not is_ban(kind):
                     continue
-                if self._record_ban(entry, created, names()):
+                if known is None:
+                    known = self._names()
+                if self._record_ban(entry, created, known):
                     recorded += 1
 
             if oldest <= mark or len(results) < BAN_PAGE:
@@ -281,6 +286,56 @@ class AuditWatcher:
         # page that failed halfway is read again rather than skipped over.
         self.db.set_state(self._ban_mark_key, str(newest))
         return recorded
+
+    def _sweep_for_renamed_bans(self) -> int:
+        """Once an hour, read the log unfiltered and check nothing ban-shaped
+        is being missed by asking for `BAN_EVENT` by name.
+
+        Deliberately does not move the watermark: this is a second opinion on
+        one page, not a scan, and letting it mark history as read would hide
+        exactly what it exists to catch.
+        """
+        if not self.configured:
+            return 0
+        now = time.time()
+        if now - self._last_sweep < SWEEP_EVERY:
+            return 0
+        self._last_sweep = now
+
+        page = self._fetch_with_any_session(n=BAN_PAGE, event_types="")
+        if page is None:
+            return 0
+        mark = float(self.db.get_state(self._ban_mark_key, "0") or 0)
+        recorded = 0
+        for entry in page.get("results") or []:
+            kind = str(entry.get("eventType") or "?")
+            if kind not in self.types_seen:
+                # Printed once per name, into the service log: it is how you
+                # check what VRChat is calling things without a debug page.
+                print(f"[audit] event type seen: {kind}"
+                      f"{' -> Ban' if is_ban(kind) else ''}", flush=True)
+            self.types_seen[kind] = self.types_seen.get(kind, 0) + 1
+            created = parse_ts(entry.get("created_at"))
+            if created <= mark or not is_ban(kind):
+                continue
+            if self._record_ban(entry, created, self._names()):
+                recorded += 1
+                if kind != BAN_EVENT:
+                    self.ban_error = (
+                        f"VRChat is calling bans {kind!r}, not {BAN_EVENT!r} — "
+                        f"the hourly sweep is catching them, but BAN_EVENT "
+                        f"needs updating")
+                    print(f"[audit] {self.ban_error}", flush=True)
+        return recorded
+
+    def _names(self) -> dict:
+        """Display names this tool already holds, by user id. Used only to
+        print somebody's name when the audit entry gives just an id."""
+        known = {uid: rec.get("name", "")
+                 for uid, rec in self.db.all_users().items()}
+        known.update({r["user_id"]: r["name"]
+                      for r in self.db.known_users() if r.get("name")})
+        return known
 
     def _record_ban(self, entry: dict, created: float, known: dict) -> bool:
         """Write one audit ban into the log. False if it was already there.
