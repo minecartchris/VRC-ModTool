@@ -1,12 +1,22 @@
-"""Watch the VRChat group audit log for kicks and warns that need a reason.
+"""Watch the VRChat group audit log for kicks, warns and bans.
 
 VRChat records every instance kick and warn against the group, but not *why*.
 This polls that log and queues each action so the moderator who issued it is
 asked for a reason while they still remember it — instead of the log being
 reconstructed from memory hours later, or never.
 
-    group.instance.kick   ->  Kick
-    group.instance.warn   ->  Warn
+    group.instance.kick   ->  Kick, queued for a reason
+    group.instance.warn   ->  Warn, queued for a reason
+    group.user.ban        ->  Ban, logged as it stands
+
+Bans are not queued for a reason, they are written straight into the log. A
+ban is usually placed from VRChat's own group page, often by someone who never
+opens this tool, and the leaderboard should still credit it. Waiting for a
+prompt to be answered would mean those bans were simply never counted.
+
+Everything read here is credited by VRChat user id — `actorId`, not the
+display name beside it — so a moderator who renames stays one person on the
+leaderboard, and the name is only what gets printed.
 
 Polling borrows the live VRChat session of a signed-in moderator, so no extra
 account or stored credential is needed. It requires the `group-audit-view`
@@ -28,8 +38,40 @@ EVENT_ACTIONS = {
 #: display name appears nowhere else in the entry, only its user id.
 _TARGET = re.compile(r"\bfor\s+(.+?)\.?\s*$")
 
+#: "Ganja banned CollzToons" / "banned user CollzToons from the group".
+_BANNED = re.compile(r"\bbanned\s+(?:the\s+user\s+|user\s+)?(.+?)"
+                     r"(?:\s+from\s+the\s+group)?\.?\s*$", re.I)
+
+#: Some entries say only that *a* user was banned. Reading that as a display
+#: name puts "a user" in the log where a person's name belongs.
+_NOBODY = {"a user", "an user", "user", "the user", "a member", "the member",
+           "a group member", "someone", "this user"}
+
 #: Don't queue history on first run; only actions from now on.
 BACKFILL_SECONDS = 3600.0
+
+#: How far back to read bans the first time this runs. Kicks are only worth
+#: prompting about while they are fresh, but a ban is a permanent record and
+#: the leaderboard is meant to show what people have actually done, so the
+#: existing history is worth having.
+BAN_BACKFILL_DAYS = 180.0
+BAN_PAGE = 100
+#: Enough to walk back through the backfill window; a normal poll stops after
+#: the first page or two, once it reaches entries it has already read.
+BAN_MAX_PAGES = 40
+
+
+def is_ban(event_type: str) -> bool:
+    """Whether this audit entry is somebody being banned from the group.
+
+    Matched on the shape of the name rather than one exact string: VRChat has
+    renamed audit events before, and a ban that stops being counted because
+    the constant went stale is worse than one matched slightly loosely.
+    Unbans and the group's banner image are the two things that would
+    otherwise slip through the word "ban".
+    """
+    kind = (event_type or "").lower()
+    return "ban" in kind and "unban" not in kind and "banner" not in kind
 
 
 def parse_ts(value) -> float:
@@ -47,6 +89,23 @@ def target_name(entry: dict) -> str:
     return entry.get("targetId", "") or "(unknown)"
 
 
+def ban_target_name(entry: dict, known: dict | None = None) -> str:
+    """Who was banned. The id is what counts; this is for reading.
+
+    A ban entry describes itself differently from a kick ("X banned Y", not
+    "X has issued an instance kick for Y"), and some of them name nobody at
+    all — so anyone the tool has already seen is looked up by id before
+    falling back to printing the id itself.
+    """
+    text = str(entry.get("description") or "")
+    match = _BANNED.search(text) or _TARGET.search(text)
+    named = match.group(1).strip() if match else ""
+    if named and named.lower() not in _NOBODY:
+        return named
+    target = entry.get("targetId", "") or ""
+    return (known or {}).get(target, "") or target or "(unknown)"
+
+
 class AuditWatcher:
     def __init__(self, database, cfg: dict, sessions, interval: float = 60.0):
         self.db = database
@@ -60,6 +119,13 @@ class AuditWatcher:
         self.last_poll = 0.0
         self.last_ok = 0.0
         self.queued = 0
+        self.bans = 0
+        self.ban_error = ""
+        #: Every eventType this has actually seen, counted. The ban scan reads
+        #: the log unfiltered, so this is a free record of what VRChat calls
+        #: things — worth showing, because it is the evidence that bans are
+        #: being recognised at all.
+        self.types_seen: dict[str, int] = {}
         #: Whose permissions are currently making this work, shown on /pending
         #: so it's obvious the feature depends on them staying signed in.
         self.provider = ""
@@ -83,9 +149,28 @@ class AuditWatcher:
         return {"configured": self.configured, "group_id": self.group_id,
                 "last_poll": self.last_poll, "last_ok": self.last_ok,
                 "error": self.last_error, "queued": self.queued,
-                "provider": self.provider}
+                "provider": self.provider, "bans": self.bans,
+                "ban_error": self.ban_error,
+                "types_seen": dict(sorted(self.types_seen.items(),
+                                          key=lambda kv: -kv[1]))}
 
     def poll_once(self) -> int:
+        """One pass: queue kicks and warns, record bans. Returns the number of
+        prompts newly queued.
+
+        The scans share one fetch path, so a dead API shows up as the one
+        error both have. `ban_error` is for what only bans can hit — an entry
+        that will not parse, a write that fails — which would otherwise be
+        invisible next to a kick poll reporting itself healthy.
+        """
+        queued = self._poll_prompts()
+        try:
+            self.bans += self._scan_bans()
+        except Exception as e:                        # never kill the poll
+            self.ban_error = f"{type(e).__name__}: {e}"
+        return queued
+
+    def _poll_prompts(self) -> int:
         """Fetch recent kicks/warns and queue any we haven't seen. Returns the
         number newly queued."""
         page = self._fetch_with_any_session()
@@ -122,7 +207,113 @@ class AuditWatcher:
         self.queued += added
         return added
 
-    def _fetch_with_any_session(self) -> dict | None:
+    # ---------------- bans ----------------
+    @property
+    def _ban_mark_key(self) -> str:
+        return f"audit_ban_seen:{self.group_id}"
+
+    def _scan_bans(self) -> int:
+        """Read bans out of the audit log and write them straight to the log.
+
+        Paged backwards until it reaches something already read, so a busy
+        hour cannot push a ban off the first page and out of the record. The
+        watermark is stored rather than derived from the bans found: a group
+        that goes a month without banning anybody must not re-read the whole
+        backfill window every minute looking for one.
+        """
+        if not self.configured:
+            return 0
+        mark = float(self.db.get_state(self._ban_mark_key, "0") or 0)
+        first_run = mark <= 0
+        if first_run:
+            mark = time.time() - BAN_BACKFILL_DAYS * 86400
+
+        # Only built if a ban actually turns up: most polls find none, and
+        # this reads every player the tool has ever screened.
+        known: dict[str, str] = {}
+
+        def names() -> dict:
+            if not known:
+                known.update({uid: rec.get("name", "")
+                              for uid, rec in self.db.all_users().items()})
+                known.update({r["user_id"]: r["name"]
+                              for r in self.db.known_users() if r.get("name")})
+            return known
+
+        recorded, newest, offset = 0, mark, 0
+        for _ in range(BAN_MAX_PAGES if first_run else 4):
+            page = self._fetch_with_any_session(n=BAN_PAGE, offset=offset,
+                                                event_types="")
+            if page is None:
+                return recorded              # no session, or a real failure
+            results = page.get("results") or []
+            if not results:
+                break
+
+            oldest = time.time()
+            for entry in results:
+                kind = str(entry.get("eventType") or "?")
+                if kind not in self.types_seen:
+                    # Printed once per name, into the service log: it is how
+                    # you check that VRChat still calls a ban what this thinks
+                    # it calls it, without adding a debug page for it.
+                    print(f"[audit] event type seen: {kind}"
+                          f"{' -> Ban' if is_ban(kind) else ''}", flush=True)
+                self.types_seen[kind] = self.types_seen.get(kind, 0) + 1
+                created = parse_ts(entry.get("created_at"))
+                oldest = min(oldest, created)
+                newest = max(newest, created)
+                if created <= mark or not is_ban(kind):
+                    continue
+                if self._record_ban(entry, created, names()):
+                    recorded += 1
+
+            if oldest <= mark or len(results) < BAN_PAGE:
+                break
+            offset += len(results)
+            # Paced, because the first run walks months of history in one go
+            # and a rate limit here costs the moderator whose account is being
+            # borrowed, not this thread.
+            self._stop.wait(1.0)
+
+        self.ban_error = ""
+        # Only move the watermark once a scan has actually completed, so a
+        # page that failed halfway is read again rather than skipped over.
+        self.db.set_state(self._ban_mark_key, str(newest))
+        return recorded
+
+    def _record_ban(self, entry: dict, created: float, known: dict) -> bool:
+        """Write one audit ban into the log. False if it was already there.
+
+        Keyed on VRChat's own audit id, so the same ban read twice — a retry,
+        a restart mid-scan — lands on the same record instead of inflating
+        somebody's count.
+        """
+        log_id = f"aud-{entry.get('id') or ''}"[:64]
+        if not entry.get("id"):
+            return False
+        if self.db.get_incident(log_id):
+            return False
+        self.db.upsert_incident({
+            "id": log_id, "created_at": created,
+            # No reason: VRChat does not ask for one when a group ban is
+            # placed, and inventing wording here would put words in the
+            # moderator's mouth. The log shows it blank, honestly.
+            "trigger": "Ban",
+            "transcript": [str(entry.get("description") or "").strip()],
+            "world_name": "", "world_id": "", "instance_id": "",
+            "players": [{"name": ban_target_name(entry, known),
+                         "user_id": entry.get("targetId", "") or ""}],
+            "clip_path": "", "screenshot_path": "", "notes": "",
+            "status": "reported",
+            "reported_by": entry.get("actorDisplayName", "") or "",
+            "reported_by_id": entry.get("actorId", "") or "",
+            "origin": "vrchat-audit",
+        })
+        return True
+
+    def _fetch_with_any_session(self, *, n: int = 60, offset: int = 0,
+                                event_types: str | None = None) -> dict | None:
         """Try every signed-in moderator's own VRChat session in turn.
 
         Audit access is a per-account permission, so the tool should work as
@@ -147,7 +338,9 @@ class AuditWatcher:
         for token, api in ordered:
             try:
                 page = api.get_group_audit_logs(
-                    self.group_id, n=60, event_types=",".join(EVENT_ACTIONS))
+                    self.group_id, n=n, offset=offset,
+                    event_types=(",".join(EVENT_ACTIONS)
+                                 if event_types is None else event_types))
             except Exception as e:
                 if "403" in str(e):
                     denied += 1

@@ -25,6 +25,17 @@
   <code>group-audit-view</code> is signed in — you don't need it yourself.
   Can't read it? Use the <a href="/kick-log">Kick Log</a> to file by hand.</p>
 
+{% if audit.configured %}
+<p class="dim">Group bans are read from the same log and go straight to the
+  <a href="/mod-log">Mod Log</a> without a prompt — VRChat never asks for a
+  reason when one is placed, and waiting for one here would mean the ban was
+  never counted.
+  {%- if audit.bans %} {{ audit.bans }} recorded since this server started.
+  {%- endif %}
+  {%- if audit.ban_error %} <span class="pill v-under">{{ audit.ban_error }}</span>
+  {%- endif %}</p>
+{% endif %}
+
 {% if mine %}
 <section class="card" style="border-color: var(--primary)">
   <h2>{{ icon("warning", 18) }} Yours — {{ mine|length }} waiting</h2>

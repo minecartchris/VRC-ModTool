@@ -922,24 +922,33 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         window = {"7": 7, "30": 30, "90": 90}.get(days)
         since = time.time() - window * 86400 if window else 0
 
-        # The leaderboard counts the same rows the log shows, so a moderator
-        # cannot be credited with bans they are not allowed to see. Totals
-        # therefore differ between an admin and everybody else — deliberately.
+        # The boards count everything, including bans the reader may not open;
+        # a total is not the entry. Only the table below is filtered.
         board: dict[str, dict] = {}
-        # Every log filed before ids were recorded carries only a display
-        # name, and almost all of the history is like that. Resolving the name
-        # back to an account keeps one person one row instead of splitting
-        # them into "before" and "after".
-        by_name = {(u["name"] or "").lower(): u["user_id"]
-                   for u in database.known_users() if u["name"]}
+        # A person is their VRChat id here, not the name printed beside it.
+        # Names get changed, and the same moderator under two of them is two
+        # rows on a leaderboard — which is exactly the thing it must not do.
+        # Rows filed before ids were recorded carry only a name, and most of
+        # the history is like that, so the name is resolved back to an account
+        # wherever the tool has seen one.
+        by_name, by_id = {}, {}
+        for u in database.known_users():
+            if u["name"]:
+                by_name[(u["name"] or "").lower()] = u["user_id"]
+                by_id[u["user_id"]] = u["name"]
         for staff_id, staff_row in database.all_staff().items():
-            by_name.setdefault((staff_row.get("name") or "").lower(), staff_id)
+            name = staff_row.get("name") or ""
+            by_name.setdefault(name.lower(), staff_id)
+            by_id.setdefault(staff_id, name)
 
         def bucket(name: str, uid: str) -> dict:
             uid = uid or by_name.get((name or "").lower(), "")
             key = uid or f"name:{name.lower()}"
+            # Once there is an id, the current name wins over whatever was
+            # stored on a row months ago.
             return board.setdefault(key, {
-                "name": name or "unknown", "user_id": uid,
+                "name": by_id.get(uid) or name or uid or "unknown",
+                "user_id": uid,
                 "Kick": 0, "Warn": 0, "Ban": 0, "checks": 0, "total": 0})
 
         for inc in every:

@@ -260,6 +260,13 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     PRIMARY KEY (user_id, name)
 );
 
+-- Small odds and ends the server has to remember between restarts, such as
+-- how far back through VRChat's audit log it has already read.
+CREATE TABLE IF NOT EXISTS tool_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 -- Sync cursors, one row per peer ("server" on a desktop client).
 CREATE TABLE IF NOT EXISTS sync_state (
     peer         TEXT PRIMARY KEY,
@@ -695,6 +702,16 @@ class Database:
         r = self._one("SELECT MAX(created_at) AS t FROM pending_actions "
                       "WHERE group_id=?", (group_id,))
         return (r["t"] if r and r["t"] else 0.0)
+
+    # ---------------- odds and ends the server remembers ----------------
+    def get_state(self, key: str, default: str = "") -> str:
+        r = self._one("SELECT value FROM tool_state WHERE key=?", (key,))
+        return (r["value"] if r and r["value"] is not None else default)
+
+    def set_state(self, key: str, value: str) -> None:
+        self._exec("INSERT INTO tool_state (key, value) VALUES (?,?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   (key, str(value)))
 
     # ---------------- one player's whole record ----------------
     def history_for_user(self, user_id: str, name: str = "") -> dict:

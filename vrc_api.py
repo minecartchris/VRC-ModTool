@@ -166,7 +166,7 @@ class VRChatAPI:
         return r.json()
 
     def get_group_audit_logs(self, group_id: str, *, n: int = 60,
-                             event_types: str = "",
+                             event_types: str = "", offset: int = 0,
                              start_date: str = "") -> dict:
         """Group audit log — who moderated whom, and when.
 
@@ -176,6 +176,8 @@ class VRChatAPI:
         with the target's display name only inside the description text.
         """
         params: dict = {"n": n}
+        if offset:
+            params["offset"] = offset
         if event_types:
             params["eventTypes"] = event_types
         if start_date:
