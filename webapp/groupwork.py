@@ -131,13 +131,17 @@ class GroupWorker:
         return live[start:] + live[:start]
 
     def status(self) -> dict:
-        open_rows = self.db.group_actions(open_only=True, limit=500)
-        return {"waiting": len(open_rows),
-                "held": sum(1 for r in open_rows if self.holding(r["kind"])),
+        # Counted, not paged. This was reading the first 500 open rows and
+        # calling that the backlog, so a queue of thousands read "500 waiting"
+        # for days and looked stuck rather than long.
+        counts = self.db.count_group_actions()
+        return {"waiting": sum(counts.values()),
+                "held": sum(n for kind, n in counts.items()
+                            if self.holding(kind)),
                 "bans_held": bool(self.cfg.get("hold_bans")),
                 "invites_held": bool(self.cfg.get("hold_invites")),
-                "bans": sum(1 for r in open_rows if r["kind"] == "ban"),
-                "invites": sum(1 for r in open_rows if r["kind"] == "invite"),
+                "bans": counts.get("ban", 0),
+                "invites": counts.get("invite", 0),
                 "last_run": self.last_run,
                 "last_error": self.last_error,
                 "providers": len(self._live_clients()),
@@ -156,7 +160,13 @@ class GroupWorker:
 
     def run_once(self) -> int:
         """Attempt every action that is due. Returns how many went out."""
-        due = self.db.due_group_actions(limit=BATCH_CAP * 2)
+        # Held kinds are excluded from the query rather than skipped in the
+        # loop below. They are the oldest rows in the table, so they sort to
+        # the front of every pass: with bans held, 27 of them filled a budget
+        # of 5 and no invite was attempted for days. A hold is meant to stop
+        # one kind of action, not the queue.
+        kinds = [k for k in ("ban", "invite") if not self.holding(k)]
+        due = self.db.due_group_actions(limit=BATCH_CAP * 2, kinds=kinds)
         if not due:
             self.last_run = time.time()
             return 0
@@ -170,9 +180,11 @@ class GroupWorker:
             if self._stop.is_set():
                 break
             if self.holding(row["kind"]):
-                # Left exactly as it is: not attempted, not deferred, not
-                # counted as a try. The row is the record of what would have
-                # happened, and releasing the hold should find it untouched.
+                # Filtered out above; belt and braces if the config changes
+                # mid-pass. Left exactly as it is: not attempted, not
+                # deferred, not counted as a try. The row is the record of
+                # what would have happened, and releasing the hold should find
+                # it untouched.
                 continue
             if n and clients:
                 self._stop.wait(SPACING)      # pace, so VRChat doesn't 429

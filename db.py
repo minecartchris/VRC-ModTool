@@ -853,12 +853,33 @@ class Database:
                    tuple(row.values()))
         return row
 
-    def due_group_actions(self, limit: int = 20) -> list[dict]:
+    def due_group_actions(self, limit: int = 20,
+                          kinds: tuple | list | None = None) -> list[dict]:
+        """Actions ready to be attempted, oldest first.
+
+        `kinds` exists so a held kind can be left out of the query entirely.
+        Fetching them and skipping them later is not the same thing: they are
+        the oldest rows in the table, so they fill the page and the work that
+        could actually be sent never appears in it.
+        """
+        sql = ("SELECT * FROM group_actions WHERE done_at IS NULL "
+               "AND cancelled_at IS NULL AND next_try_at <= ?")
+        params: list = [time.time()]
+        if kinds is not None:
+            if not kinds:
+                return []
+            sql += " AND kind IN (%s)" % ",".join("?" * len(kinds))
+            params.extend(kinds)
+        sql += " ORDER BY created_at LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self._query(sql, tuple(params))]
+
+    def count_group_actions(self) -> dict:
+        """How many actions are still waiting, per kind."""
         rows = self._query(
-            "SELECT * FROM group_actions WHERE done_at IS NULL "
-            "AND cancelled_at IS NULL AND next_try_at <= ? "
-            "ORDER BY created_at LIMIT ?", (time.time(), limit))
-        return [dict(r) for r in rows]
+            "SELECT kind, COUNT(*) AS n FROM group_actions "
+            "WHERE done_at IS NULL AND cancelled_at IS NULL GROUP BY kind")
+        return {r["kind"]: r["n"] for r in rows}
 
     def group_actions(self, *, open_only: bool = False,
                       limit: int = 100) -> list[dict]:
