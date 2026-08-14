@@ -130,6 +130,22 @@ class GroupWorker:
         start = self._turn % len(live)
         return live[start:] + live[:start]
 
+    def _why_nobody(self, clients: dict, kind: str) -> str:
+        """Which of the two it is, in words, for the Admin page."""
+        now = time.time()
+        cooling = sum(1 for tok in clients
+                      if now - self._cooling.get(tok, 0) < COOLING_FOR)
+        denied = sum(1 for tok in clients
+                     if now - self._denied.get((tok, kind), 0) < DENIED_FOR)
+        parts = []
+        if denied:
+            parts.append(f"{denied} refused by VRChat (no permission)")
+        if cooling:
+            parts.append(f"{cooling} rate limited")
+        if not parts:
+            return f"{len(clients)} signed in, none usable"
+        return f"{len(clients)} signed in: " + ", ".join(parts)
+
     def status(self) -> dict:
         # Counted, not paged. This was reading the first 500 open rows and
         # calling that the backlog, so a queue of thousands read "500 waiting"
@@ -189,9 +205,11 @@ class GroupWorker:
             if n and clients:
                 self._stop.wait(SPACING)      # pace, so VRChat doesn't 429
             if not clients:
-                self.db.defer_group_action(
-                    row["id"], "waiting for a moderator with the permission "
-                                "to sign in", RETRY_NO_PROVIDER)
+                # None: nobody was here to try, which says nothing about the
+                # action. Whatever VRChat last said about it stands.
+                self.db.defer_group_action(row["id"], None, RETRY_NO_PROVIDER)
+                self.last_error = ("nobody is signed in with a live VRChat "
+                                   "session, so nothing can be sent")
                 continue
             done += 1 if self._attempt(row, clients) else 0
         self.last_run = time.time()
@@ -201,11 +219,14 @@ class GroupWorker:
         last_error = "no signed-in moderator holds that permission"
         order = self.usable(clients, row["kind"])
         if not order:
+            # Same again: this is about who is available, not about the row.
+            # The account-specific refusal it used to overwrite is the whole
+            # diagnosis — "Blade2Saiko: 403" says the permission is missing,
+            # "every session is rate limited" says nothing at all.
             self.db.defer_group_action(
-                row["id"],
-                "every signed-in session is rate limited or lacks the "
-                "permission", RETRY_RATE_LIMITED if self._cooling else
-                RETRY_NO_PROVIDER)
+                row["id"], None,
+                RETRY_RATE_LIMITED if self._cooling else RETRY_NO_PROVIDER)
+            self.last_error = self._why_nobody(clients, row["kind"])
             return False
         for token, api in order:
             who = (getattr(api, "user", None) or {}).get("displayName", "?")

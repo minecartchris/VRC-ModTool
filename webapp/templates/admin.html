@@ -114,7 +114,12 @@
     <h2 style="margin:0">Bans &amp; invites waiting</h2>
     <span class="dim">
       {{ queue_status.waiting }} waiting ·
-      {{ queue_status.providers }} signed-in session{{ "" if queue_status.providers == 1 else "s" }} to try
+      {# Signed in and able to send are not the same number: an account VRChat
+         refused, or has just rate limited, is signed in and useless. When they
+         differ the queue is stalled on permissions, not on attendance. #}
+      {{ queue_status.sending_with }} of
+      {{ queue_status.providers }} signed-in session{{ "" if queue_status.providers == 1 else "s" }}
+      can send right now
     </span>
   </div>
   <p class="dim">This server has no VRChat account of its own — it acts through

@@ -895,9 +895,21 @@ class Database:
                    "last_error='' WHERE id=?",
                    (time.time(), done_by or "", action_id))
 
-    def defer_group_action(self, action_id: str, error: str,
+    def defer_group_action(self, action_id: str, error: str | None,
                            retry_in: float) -> None:
-        """Record a failure and try again later. Never gives up."""
+        """Record a failure and try again later. Never gives up.
+
+        `error=None` keeps whatever was already there. "Nobody could try this"
+        is not news, and writing it over VRChat's own answer loses the only
+        line that says *why* — a row retried every twenty seconds overwrites
+        the real refusal within one pass of earning it, and then the queue
+        looks stuck for no stated reason.
+        """
+        if error is None:
+            self._exec(
+                "UPDATE group_actions SET attempts=attempts+1, next_try_at=? "
+                "WHERE id=?", (time.time() + retry_in, action_id))
+            return
         self._exec(
             "UPDATE group_actions SET attempts=attempts+1, last_error=?, "
             "next_try_at=? WHERE id=?",
