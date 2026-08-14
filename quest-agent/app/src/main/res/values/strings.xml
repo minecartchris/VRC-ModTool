@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VRChat Roster Agent</string>
+    <string name="blurb">Reads VRChat\'s own log on this headset and tells the mod panel who is in your instance. It never reads anything else, and it sends nothing unless you are in one of the group\'s instances.</string>
+    <string name="server_label">Mod panel address</string>
+    <string name="name_label">What to call this headset</string>
+    <string name="choose_folder">Choose VRChat\'s Logs folder</string>
+    <string name="no_folder">No folder chosen. It is Documents › Logs on this headset.</string>
+    <string name="folder_chosen">Reading: %1$s</string>
+    <string name="pair">Pair with the panel</string>
+    <string name="unpair">Forget this key</string>
+    <string name="pair_code">Code %1$s\n%2$s</string>
+    <string name="paired_as">Paired — reports as %1$s</string>
+    <string name="paired_unknown">Paired.</string>
+    <string name="not_paired">Not paired yet.</string>
+    <string name="start">Start reporting</string>
+    <string name="stop">Stop reporting</string>
+    <string name="errors_only">VRChat is not writing join lines. Set Logging to Full in VRChat\'s Quick Menu → Settings → Debug.</string>
+</resources>

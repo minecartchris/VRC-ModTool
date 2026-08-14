@@ -1,0 +1,3 @@
+# Where the Android SDK lives on this machine. Copy to local.properties.
+# Never commit local.properties — it is machine-specific.
+sdk.dir=C:\Users\<you>\AppData\Local\Android\Sdk

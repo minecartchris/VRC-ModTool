@@ -5,6 +5,10 @@ what it would take. Researched 2026-08-14; nothing here has been run on a
 headset yet, and the three things that need a headset to answer are marked
 **verify on device**.
 
+> **It has since been built** — see [`quest-agent/`](../quest-agent/) for the
+> app and its README. The three questions below are still the three questions;
+> they are what the first install on a real headset is for.
+
 ## The short answer
 
 Yes, probably — and the app itself is small. The roster does not come from
