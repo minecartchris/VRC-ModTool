@@ -1292,6 +1292,13 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         """
         if not session_of(request):
             return JSONResponse({"error": "signed out"}, status_code=401)
+        # Rebuild this moderator's VRChat client if the process lost it in a
+        # restart. Only the browser's own token can decrypt the stored cookie,
+        # so it has to happen on a request — and this is the request that
+        # keeps arriving from a tab somebody left open. Without it a page can
+        # sit polling all evening while the invite queue reports that nobody
+        # is signed in.
+        sessions.client(request.cookies.get(SESSION_COOKIE))
         scope = instance or (f"client:{reporter}" if reporter else "")
         return {"version": database.state_version(scope)}
 
