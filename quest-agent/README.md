@@ -11,9 +11,10 @@ no changes: pair once against `/api/agent/pair/start`, then post to
 ## Status
 
 **Built and tested as far as it can be without a headset.** The debug APK and
-the release bundle both build, and the log parsing has 13 unit tests against
-the lines VRChat writes — including a live check of the same patterns against
-a real 1 MB PC log (77 joins, all carrying user ids).
+a signed release APK both build — the signing path was proved end to end with
+a throwaway key, and `apksigner verify` accepts the result. The log parsing has
+13 unit tests against the lines VRChat writes, including a live check of the
+same patterns against a real 1 MB PC log (77 joins, all carrying user ids).
 
 Three things need a headset to confirm, and all three are the platform rather
 than the code:
@@ -84,8 +85,12 @@ its own if it sees a log growing without any.
 
 ## Putting it on the Horizon Store
 
-The release bundle already builds (`app/build/outputs/bundle/release/`), and
-the manifest carries what Meta's release checklist asks for: `installLocation`
+Full walkthrough: [docs/horizon-store-upload.md](../docs/horizon-store-upload.md).
+
+Meta takes **APKs, not app bundles** — signed, up to 1 GB. `assembleRelease`
+produces one once `keystore.properties` exists; `bundleRelease` builds an AAB
+that is of no use here. The manifest carries what Meta's release checklist
+asks for: `installLocation`
 auto, `excludeFromRecents` on the launch activity, a supported-devices entry,
 no `debuggable`, touchscreen and headtracking both marked not required so a 2D
 app is not filtered off a headset that has neither.
@@ -104,11 +109,11 @@ Still to do, none of which is code:
    ```
 
    ```bash
-   ./gradlew bundleRelease
+   ./gradlew clean assembleRelease
    ```
 
 3. **Create the app in the Meta Horizon Developer Dashboard** as a 2D app,
-   upload the bundle, and answer the permission review for
+   upload the APK to an ALPHA release channel, and answer the permission review for
    `POST_NOTIFICATIONS`: it is the ongoing notification for a foreground
    service the user starts themselves, not messaging.
 4. **A privacy policy URL is required.** Say plainly what it sends — VRChat
@@ -119,9 +124,11 @@ Still to do, none of which is code:
    one group's staff rather than something a player would want.
 
 Worth weighing first: a store listing is public, and this is an internal tool
-for one group's moderators. Sideloading needs no review, no privacy policy and
-no store art — the cost is that updates are manual and it does not appear in
-anyone's library. The build supports both; only the second one has homework.
+for one group's moderators. There is a middle option the guide covers — a
+private release channel, where the app is in the Dashboard and builds go only
+to Meta accounts you invite by email or link, with no public listing and no
+review queue. That gets real installs and updates without any of the homework
+above.
 
 ## Layout
 
