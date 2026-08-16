@@ -1,0 +1,6 @@
+{
+  "app_id": "from the dashboard, Development -> API",
+  "app_secret": "same page — treat it like a password",
+  "channel": "ALPHA",
+  "age_group": "TEENS_AND_ADULTS"
+}

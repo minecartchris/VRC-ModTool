@@ -83,52 +83,36 @@ In VRChat itself: Quick Menu → Settings → Debug → **Logging: Full**. Quest
 ships on Errors Only, and join lines only appear on Full. The app says so on
 its own if it sees a log growing without any.
 
-## Putting it on the Horizon Store
+## Getting it onto moderators' headsets
 
-Full walkthrough: [docs/horizon-store-upload.md](../docs/horizon-store-upload.md).
+Invite-only, through the store: the app is in the Developer Dashboard, builds
+go to accounts you invite, and it is never publicly listed. One command:
+
+```bash
+python release.py
+```
+
+It makes the signing key the first time, bumps the version, builds a signed
+APK, checks the signature, and uploads it to the invite-only ALPHA channel.
+The public store needs `--channel store --yes-public`, spelled out, because
+invite-only should be the default when nobody is paying attention.
+
+Set-up is three one-time things — a Meta developer account, the app created in
+the dashboard, and its App ID and Secret copied into `release.local.json` (see
+`release.example.json`). Inviting people is one dashboard page; Meta has no
+API for it. Full walkthrough:
+[docs/horizon-store-upload.md](../docs/horizon-store-upload.md).
 
 Meta takes **APKs, not app bundles** — signed, up to 1 GB. `assembleRelease`
-produces one once `keystore.properties` exists; `bundleRelease` builds an AAB
-that is of no use here. The manifest carries what Meta's release checklist
-asks for: `installLocation`
-auto, `excludeFromRecents` on the launch activity, a supported-devices entry,
-no `debuggable`, touchscreen and headtracking both marked not required so a 2D
-app is not filtered off a headset that has neither.
+produces one; `bundleRelease` builds an AAB that is of no use here. The
+manifest already carries Meta's release checklist: `installLocation` auto,
+`excludeFromRecents` on the launch activity, a supported-devices entry, no
+`debuggable`, and touchscreen and headtracking both marked not required so a
+2D app is not filtered off a headset that has neither.
 
-Still to do, none of which is code:
-
-1. **Decide the application id before the first upload.** It is
-   `com.vrcmodsuite.rosteragent` and it can never be changed after publishing.
-2. **Make an upload key** and put it in `keystore.properties` at the project
-   root — `storeFile`, `storePassword`, `keyAlias`, `keyPassword`. That file
-   is gitignored and must stay that way; losing the key means never updating
-   the listing again.
-
-   ```bash
-   keytool -genkeypair -v -keystore upload.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
-   ```
-
-   ```bash
-   ./gradlew clean assembleRelease
-   ```
-
-3. **Create the app in the Meta Horizon Developer Dashboard** as a 2D app,
-   upload the APK to an ALPHA release channel, and answer the permission review for
-   `POST_NOTIFICATIONS`: it is the ongoing notification for a foreground
-   service the user starts themselves, not messaging.
-4. **A privacy policy URL is required.** Say plainly what it sends — VRChat
-   display names and user ids of people in the moderator's current instance,
-   to a server the group runs — and that it reads nothing but VRChat's log
-   folder.
-5. Store art, and a description that makes clear it is a moderation tool for
-   one group's staff rather than something a player would want.
-
-Worth weighing first: a store listing is public, and this is an internal tool
-for one group's moderators. There is a middle option the guide covers — a
-private release channel, where the app is in the Dashboard and builds go only
-to Meta accounts you invite by email or link, with no public listing and no
-review queue. That gets real installs and updates without any of the homework
-above.
+**Back up `upload.jks` and `keystore.properties`** the moment the script makes
+them. Meta ties the app to that key: lose it and this app can never be updated
+again under its package name.
 
 ## Layout
 
@@ -139,3 +123,4 @@ above.
 | `Api.kt` | The three calls: pair start, pair poll, post roster. |
 | `RosterService.kt` | The foreground service that polls and posts every ten seconds. |
 | `MainActivity.kt` | Setup panel: address, folder, pairing, start/stop, status. |
+| `release.py` | One command to build, sign, version-bump and upload to the invite-only channel. |

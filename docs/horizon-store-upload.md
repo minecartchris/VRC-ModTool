@@ -1,183 +1,114 @@
-# Getting the Quest agent onto the Meta Horizon Store
+# Putting the Quest agent on your moderators' headsets
 
-Written for [`quest-agent/`](../quest-agent/), against Meta's current
-requirements (checked 2026-08-16). Every command here has been run except the
-ones that need a Meta developer account — those are marked.
+Invite-only, through the Meta Horizon Store: the app is in your Developer
+Dashboard, builds go only to accounts you invite, and it is never publicly
+listed. No review queue, no store art, no age rating, no privacy policy.
 
-## First, the decision worth making before any of it
+Written for [`quest-agent/`](../quest-agent/) against Meta's current
+requirements (checked 2026-08-16). Everything that could be run here has been;
+the steps needing a Meta account are marked **you**.
 
-There are two ways to get this onto moderators' headsets, and only one of them
-involves the store at all.
+## What you actually have to do
 
-**Sideloading.** You hand out the APK, they `adb install` it. No account, no
-review, no listing, no privacy policy, no art. Updates are manual and it never
-appears in anyone's library.
+Four things, three of them once ever.
 
-**The store, as a private release channel.** The app exists in the Developer
-Dashboard, and builds go only to Meta accounts you invite by email or link —
-200 by default, raisable to 2,500. No public listing. Installs and updates come
-through the headset normally.
+1. **you, once** — make a Meta developer account and an organisation at
+   <https://developers.meta.com>. This gates everything else and can take a
+   day, so start it first.
+2. **you, once** — create the app in the dashboard. Pick **Meta Quest**, and
+   leave it unlisted; you never submit it for review.
+3. **you, once** — from the app's **Development → API** page, copy the App ID
+   and App Secret into `quest-agent/release.local.json` (there is a
+   `release.example.json` to copy). Download
+   [ovr-platform-util](https://developers.meta.com/horizon/downloads/package/platform-utils-cli-pc/)
+   and put it on your PATH or next to the script.
+4. **you, each release** — run this:
 
-**The store, publicly listed.** Everything below, including review, age
-rating, store art and a privacy policy — for a tool that only your staff can
-actually use, since it does nothing without a paired key from your panel.
+   ```bash
+   python quest-agent/release.py
+   ```
 
-For an internal moderation tool the private channel is almost certainly the
-right one: real installs and updates, no public listing, no review queue. The
-steps below take you there, and then say what the extra mile to a public
-listing costs.
+   That is the whole release. It makes the signing key the first time, bumps
+   the version, builds a signed APK, checks the signature, and uploads it to
+   the ALPHA channel — the invite-only one.
 
-## 1. Build a signed release APK
+Then, once, in the dashboard: **Distribution → Release Channels → ALPHA →
+Email Invite Users**, or copy the invite URL and post it wherever your staff
+already talk. Anyone on that list installs the app from their library like
+anything else; anyone not on it cannot see it exists.
 
-**Meta takes APKs, not app bundles** — up to 1 GB, signed with an Android
-certificate. (The README used to say `bundleRelease`; that was wrong, and the
-AAB it produces is of no use here.)
+Meta has no API for invites, so that page is the one bit of clicking that
+cannot be scripted away.
 
-Make an upload key. This is the one irreversible step in the whole process:
-lose this file or its passwords and you can never update the app again, under
-that package name, ever.
+## What the script refuses to do
 
-```bash
-keytool -genkeypair -v -keystore upload.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
-```
+`ALPHA` is the default and `store` is guarded: pushing to the public channel
+needs `--channel store --yes-public`, spelled out, on purpose. Invite-only
+should be what happens when nobody is paying attention.
 
-Put it somewhere backed up and outside the repo, then write
-`quest-agent/keystore.properties` (already gitignored):
+It also refuses to upload an APK signed with the throwaway key I used to prove
+the signing path, so a test key cannot become your app's identity by accident.
 
-```properties
-storeFile=C:/keys/upload.jks
-storePassword=…
-keyAlias=upload
-keyPassword=…
-```
+## The one thing you cannot undo
 
-Build:
+The first run makes `quest-agent/upload.jks` and `keystore.properties`, and
+prints a warning about them. **Back both up somewhere that is not that PC.**
+Meta ties the app to that key. Lose it and the app can never be updated again
+under that package name — no reset, no recovery, no appeal.
 
-```bash
-./gradlew clean assembleRelease
-```
+The package name is the other permanent choice: `com.vrcmodsuite.rosteragent`,
+changeable in `quest-agent/app/build.gradle.kts` only *before* the first
+upload.
 
-The APK lands at `quest-agent/app/build/outputs/apk/release/app-release.apk` —
-about 6 MB. Check it before uploading anything:
+## Two gates, not one
 
-```bash
-apksigner verify --print-certs -v app/build/outputs/apk/release/app-release.apk
-```
+Being invited to the channel gets somebody the app. It does not get them
+anything else: the agent does nothing until it is paired, and a pairing key
+only exists when a signed-in moderator opens the pairing link — which requires
+being in your staff group. Admins can revoke any agent's key from the panel
+afterwards.
 
-It should say `Verifies` and name your certificate — if it names
-"Throwaway Test Key" you have picked up the test key I used to prove the
-signing path works; delete `keystore.properties` and write your own.
+So install and use are gated separately, and neither implies the other.
 
-```bash
-aapt dump badging app/build/outputs/apk/release/app-release.apk | head -3
-```
+## After the first install, test it
 
-Confirm `package: name='com.vrcmodsuite.rosteragent'` and the `versionCode`.
-**Every upload needs a higher `versionCode`** than the last — bump it in
-`quest-agent/app/build.gradle.kts` for each build you send.
-
-## 2. Create the app in the Developer Dashboard
-
-*(Needs a Meta developer account and an organization. Set that up first; it
-gates everything else and can take a day.)*
-
-At <https://developers.meta.com/horizon/manage>, create an app for Meta Quest.
-Two things to get right at creation, because neither can be changed later:
-
-- **The package name.** It is `com.vrcmodsuite.rosteragent` unless you change
-  it in `app/build.gradle.kts` **before** the first upload. After publishing it
-  is permanent.
-- **The org it belongs to**, if you have more than one.
-
-## 3. Upload the build
-
-Three ways in; all do the same thing.
-
-**Dashboard.** Your app → Distribution → Builds (or open a release channel) →
-Upload → pick the APK. Easiest for a first upload.
-
-**Command line**, which is what you want once this is routine. Get the tool
-from Meta's downloads page, and the credentials from your app under
-Development → API — treat the app secret like a password:
-
-```bash
-ovr-platform-util upload-quest-build --app-id <ID> --app-secret <SECRET> --apk app/build/outputs/apk/release/app-release.apk --channel ALPHA --age-group TEENS_AND_ADULTS --notes "First build"
-```
-
-**Meta Quest Developer Hub**, if you prefer a GUI — it wraps the same tool.
-
-Upload to **ALPHA**, not Production. Production means the public store.
-
-## 4. Put it on your moderators' headsets
-
-In the Dashboard: Distribution → Release Channels → your channel → **Email
-Invite Users**, comma-separated Meta account emails, or generate an invite URL
-(URLs expire after 90 days unless a new build is uploaded).
-
-An invited account gets the app in their library and installs it like anything
-else. This is the allowlist you were asking about — combined with pairing,
-someone would need both an invite to the channel *and* an approved pairing from
-the panel before the app does anything at all.
-
-Then actually test it, because nothing here has run on a headset yet:
+Nothing here has run on a headset yet, and one thing genuinely might not work:
 
 - Does the service keep reporting while VRChat is immersive? This is the open
-  question the whole design rests on.
+  question the whole design rests on. If it stops the moment VRChat takes
+  over, the fallback is a panel left open beside it.
 - Does the folder picker reach Documents › Logs?
-- With VRChat's logging set to Full, does Screening fill up?
+- With VRChat's logging set to **Full** (Quick Menu → Settings → Debug — Quest
+  ships on Errors Only), does Screening fill up?
 
-## 5. Only if you want a public listing
+## Updating later
 
-Everything above stays true; this is the extra mile.
+Same command. The version bump, the build, the signature check and the upload
+all happen again, and the invite URL's 90-day clock resets every time you
+upload.
 
-- **Store listing**: name, descriptions, category, icon, cover art,
-  screenshots and/or video. The Dashboard has a cropping tool and an asset
-  library, so aspect ratios are not the obstacle they look like.
-- **Age rating** via the IARC questionnaire.
-- **Data use checkup** — declare what data the app handles and why. For this
-  app: VRChat display names and user ids of people in the moderator's current
-  instance, sent to a server your group runs.
-- **A privacy policy URL.** Required, and it has to be real. Say plainly what
-  is sent, to whom, and that the app reads nothing but VRChat's log folder.
-- **Permission review.** The manifest declares `POST_NOTIFICATIONS`, which
-  Meta reviews case by case. The honest answer: it is the ongoing notification
-  for a foreground service the user starts themselves, not messaging. Worth
-  adding that the app deliberately does *not* request All-files access — it
-  takes a folder grant through the system picker instead, which is why there
-  is no storage permission to justify.
-- **Content**: be explicit that it is a moderation tool for one group's staff
-  and useless without their server. A reviewer who thinks it is a general
-  VRChat utility will test it, find it does nothing, and reject it.
+```bash
+python quest-agent/release.py --notes "what changed"
+```
 
-Then: app details, pricing (free), every metadata section green, **Submit for
-Review**. Meta asks you to plan submission about two weeks ahead of any target
-date.
+## If you ever do want a public listing
 
-## 6. Updating later
+It is the same APK plus homework: store art, IARC age rating, a data use
+checkup, a real privacy policy URL, and a permission review for
+`POST_NOTIFICATIONS` (the honest answer: it is the ongoing notification for a
+foreground service the user starts themselves, not messaging — and the app
+deliberately does not request All-files access, taking a folder grant through
+the system picker instead). Meta asks you to submit about two weeks ahead of
+any target date.
 
-1. Bump `versionCode` (and `versionName` if it means anything to you).
-2. `./gradlew clean assembleRelease`
-3. Upload to the channel — same command, new `--notes`.
-4. Promote the build when you are happy with it.
-
-Same key every time. If you ever cannot sign with it, the app is finished
-under that package name.
-
-## What the manifest already satisfies
-
-So you are not hunting for these during review — `quest-agent` already sets
-`installLocation` to auto, `excludeFromRecents` on the launch activity, a
-supported-devices entry covering Quest 2 / Pro / 3 / 3S, `debuggable` off in
-release, minSdk 29 (the oldest any current Quest runs) and targetSdk 34
-(inside the 32–36 band Meta allows for 2D apps), and marks both touchscreen
-and headtracking as not required so a 2D app is not filtered off a headset
-that has neither.
+For a tool that does nothing without a key from your own panel, that is a lot
+of ceremony for no extra reach.
 
 ## Sources
 
-- [Uploading your Meta Quest apps](https://developers.meta.com/horizon/resources/publish-upload-overview/) — APK only, 1 GB, signing
-- [OVR Platform Utility](https://developers.meta.com/horizon/resources/publish-reference-platform-command-line-utility/) — the upload command
-- [Add users to a release channel](https://developers.meta.com/horizon/resources/publish-release-channels-add-users/) — email and URL invites, limits
-- [Submitting your app](https://developers.meta.com/horizon/resources/publish-submit/) — the review flow
+- [Uploading your Meta Quest apps](https://developers.meta.com/horizon/resources/publish-upload-overview/) — APK only, 1 GB, must be signed
+- [OVR Platform Utility](https://developers.meta.com/horizon/resources/publish-reference-platform-command-line-utility/) — the upload command and where the App ID/Secret live
+- [Add users to a release channel](https://developers.meta.com/horizon/resources/publish-release-channels-add-users/) — email and URL invites, 200 users by default, 2,500 max, 90-day URLs
+- [Submitting your app](https://developers.meta.com/horizon/resources/publish-submit/) — what public review involves
 - [Review-requiring Android permissions](https://developers.meta.com/horizon/resources/permissions-review-required/) — POST_NOTIFICATIONS, All-files access
-- [Application manifests for release builds](https://developers.meta.com/horizon/resources/publish-mobile-manifest/) — manifest checklist
+- [Application manifests for release builds](https://developers.meta.com/horizon/resources/publish-mobile-manifest/) — the manifest checklist the app already meets

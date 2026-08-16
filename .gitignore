@@ -63,3 +63,6 @@ quest-agent/local.properties
 quest-agent/keystore.properties
 *.jks
 *.keystore
+quest-agent/release.local.json
+quest-agent/upload.jks
+quest-agent/ovr-platform-util.exe
