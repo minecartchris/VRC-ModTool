@@ -58,19 +58,34 @@ def container() -> dict:
     used = int(_read(CGROUP / "memory.current", "0") or 0)
     limit_raw = _read(CGROUP / "memory.max", "max")
     limit = int(limit_raw) if limit_raw.isdigit() else 0
+    if not limit or not used:
+        # No cgroup ceiling on this container. lxcfs still shows the real one
+        # in /proc/meminfo, and without this the memory row vanishes entirely
+        # on exactly the boxes where memory is worth watching.
+        info = {}
+        for line in _read(Path("/proc/meminfo")).splitlines():
+            key, _, rest = line.partition(":")
+            info[key] = int(rest.strip().split()[0]) * 1024 if rest.strip() else 0
+        total = info.get("MemTotal", 0)
+        available = info.get("MemAvailable", 0)
+        if total:
+            limit = total
+            used = total - available
 
-    disks = []
+    disks, seen_devices = [], set()
     for mount in ("/", os.path.dirname(DB_PATH) or "/"):
         try:
             st = os.statvfs(mount)
+            device = os.stat(mount).st_dev
         except OSError:
             continue
+        if device in seen_devices:
+            continue            # same filesystem, mounted somewhere else too
+        seen_devices.add(device)
         total = st.f_blocks * st.f_frsize
         free = st.f_bavail * st.f_frsize
-        entry = {"mount": mount, "total": total, "used": total - free,
-                 "percent": round((total - free) / total * 100, 1) if total else 0}
-        if entry not in disks:
-            disks.append(entry)
+        disks.append({"mount": mount, "total": total, "used": total - free,
+                      "percent": round((total - free) / total * 100, 1) if total else 0})
 
     load = _read(Path("/proc/loadavg")).split()[:3]
     return {
@@ -96,9 +111,12 @@ def service() -> dict:
         key, _, value = line.partition("=")
         props[key] = value
 
-    started_mono = int(props.get("ActiveEnterTimestampMonotonic", "0") or 0)
-    up_now = float((_read(Path("/proc/uptime")) or "0").split()[0])
-    running_for = up_now - started_mono / 1e6 if started_mono else 0
+    pid = int(props.get("MainPID", "0") or 0)
+    running_for = 0.0
+    if pid:
+        elapsed = _run(["ps", "-o", "etimes=", "-p", str(pid)])
+        if elapsed.strip().isdigit():
+            running_for = float(elapsed.strip())
 
     health, ms, code = False, 0.0, 0
     start = time.time()
@@ -115,7 +133,7 @@ def service() -> dict:
     return {
         "state": props.get("ActiveState", "?"),
         "sub": props.get("SubState", "?"),
-        "pid": int(props.get("MainPID", "0") or 0),
+        "pid": pid,
         "memory": int(mem) if mem.isdigit() else 0,
         "restarts": int(props.get("NRestarts", "0") or 0),
         "running_for": max(running_for, 0),
