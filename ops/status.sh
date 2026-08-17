@@ -3,6 +3,7 @@
 #
 #   ./status.sh          once
 #   ./status.sh -w       every 5 seconds until Ctrl-C
+#   ./status.sh -t       the full dashboard, with start/stop/restart
 #   ./status.sh --json   the same numbers, for a script to read
 #
 # Run it inside the container, or from the Proxmox host:
@@ -22,6 +23,7 @@ ARGS=()
 for arg in "$@"; do
   case "$arg" in
     -w|--watch) WATCH=1 ;;
+    -t|--tui) exec "$PYTHON" "$HERE/tui.py" ;;
     *) ARGS+=("$arg") ;;
   esac
 done
