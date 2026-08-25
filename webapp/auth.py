@@ -167,8 +167,24 @@ class SessionManager:
             raise AuthError(f"Could not reach VRChat: {e}") from e
         return self._finish(api)
 
+    def is_admin(self, user_id: str) -> bool:
+        """Admins from the config and from the table, same as the server's own
+        check — kept here too because sign-in happens before any of that."""
+        if not user_id:
+            return False
+        roots = {str(r).strip() for r in (self.cfg.get("root_admins") or [])}
+        if user_id in roots:
+            return True
+        try:
+            return bool(self.db.is_admin(user_id))
+        except Exception:
+            return False        # a database hiccup must not grant access
+
     def _finish(self, api: vrc_api.VRChatAPI) -> dict:
-        """Verify staff membership, then mint a session."""
+        """Verify staff membership, then mint a session.
+
+        Two ways in: the staff group, or the admin list. Everyone else is
+        refused."""
         user = api.user or api.check_session()
         if not user:
             raise AuthError("VRChat accepted the login but returned no user.")
@@ -187,8 +203,21 @@ class SessionManager:
             raise AuthError(f"Signed in, but couldn't read your groups: {e}"
                             ) from e
         matched = staff_groups(groups, want)
+        if not matched and self.is_admin(uid):
+            # Being on the admin list is its own way in. An admin who has left
+            # the staff group, or whose group read came back short, should not
+            # be locked out of the tool they administer.
+            #
+            # The cost is that removing somebody from the staff group no longer
+            # removes their access on its own — they have to come off the admin
+            # list too. That is why this is announced in the log and printed on
+            # the page rather than being a silent exception.
+            matched = ["the admin list"]
+            print(f"[auth] {name} ({uid}) signed in from the admin list, "
+                  f"not the staff group", flush=True)
         if not matched:
-            raise AuthError(f"{name} is not in the staff group. Access denied.")
+            raise AuthError(f"{name} is not in the staff group and is not on "
+                            f"the admin list. Access denied.")
 
         token = secrets.token_urlsafe(32)
         ttl = float(self.cfg.get("session_hours", 12)) * 3600
