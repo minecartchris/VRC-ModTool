@@ -726,6 +726,17 @@ class Database:
             "UPDATE pending_actions SET reason=?, incident_id=?, resolved_at=? "
             "WHERE id=?", (reason, incident_id, time.time(), action_id))
 
+    def expired_pending_actions(self, limit: int = 10) -> list[dict]:
+        """The ones that timed out, most recently first.
+
+        Its own query because the general list is ordered by when the kick
+        happened, and expired prompts are by definition the old end of it —
+        they would never appear in a page of the newest rows.
+        """
+        return [dict(r) for r in self._query(
+            "SELECT * FROM pending_actions WHERE expired_at IS NOT NULL "
+            "ORDER BY expired_at DESC, created_at DESC LIMIT ?", (limit,))]
+
     def expire_pending_actions(self, older_than: float) -> int:
         """Give up on prompts older than this. Returns how many were dropped.
 

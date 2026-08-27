@@ -104,7 +104,6 @@
 </section>
 {% endif %}
 
-{% set timed_out = recent | selectattr("expired_at") | list %}
 {% if timed_out %}
 <section class="card">
   <div class="card-head">

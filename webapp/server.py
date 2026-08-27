@@ -656,7 +656,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                     others_count=len(others), hide_others=hide_others,
                     audit=audit.status(),
                     reasons=reason_chips(sess["user_id"]),
-                    recent=pending_rows(include_done=True)[:25],
+                    recent=pending_rows(include_done=True)[:15],
+                    timed_out=database.expired_pending_actions(10),
                     expire_hours=int(float(cfg.get("pending_expire_hours", 12)
                                            or 0)))
 
