@@ -14,8 +14,33 @@
     {%- if current.reporters|length > 1 %}
     · <span title="Their logs are merged: each client only sees the joins it rendered, so the union is more complete than either.">{{ current.reporters|length }} agents merged</span>
     {%- endif %}
+    {%- if current.headcount is not none %}
+    · <span title="What VRChat itself says is in this instance.">VRChat says
+      {{ current.headcount }}</span>
+    {%- endif %}
     · updated {{ fmt_ago(current.updated_at) }}
   </p>
+
+  {% if current.headcount is not none and (counts.all - current.headcount)|abs > 4 %}
+  <p class="banner banner-warn">{{ icon("warning", 18) }}
+    <span><strong>This list and VRChat disagree.</strong> The agents report
+      {{ counts.all }}; VRChat says {{ current.headcount }} are in the
+      instance. A few either way is normal — logs and the headcount are read
+      at different moments — but a large gap usually means an agent is
+      describing a room it has left.</span></p>
+  {% endif %}
+
+  {% if current.ignored %}
+  <p class="banner banner-warn">{{ icon("warning", 18) }}
+    <span><strong>Ignoring
+      {{ current.ignored|length }} agent{{ "" if current.ignored|length == 1 else "s" }}.</strong>
+      {% for bad in current.ignored %}
+      {{ bad.reporter.client_name or "An agent" }} reported {{ bad.said }}
+      players where VRChat says {{ current.headcount }}{{ ", " if not loop.last else "" }}
+      {% endfor %}
+      — so its list is not merged into this one. It is most likely still
+      reading a room it has left; restarting that agent fixes it.</span></p>
+  {% endif %}
   {% elif choices %}
   <p class="lead">You aren't running an agent, so there is no instance that is
     yours. Pick whose to look at — each list is only the people in that

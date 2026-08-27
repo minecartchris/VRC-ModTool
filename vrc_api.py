@@ -165,6 +165,17 @@ class VRChatAPI:
         r.raise_for_status()
         return r.json()
 
+    def get_instance(self, world_id: str, instance_id: str) -> dict:
+        """One instance as VRChat sees it: `n_users`, `capacity`, `ownerId`.
+
+        VRChat will not tell you *who* is in an instance — that is why the
+        roster agents exist — but it will tell you how many, and a headcount
+        is enough to catch an agent describing a room it left.
+        """
+        r = self.s.get(f"{API}/instances/{world_id}:{instance_id}", timeout=20)
+        r.raise_for_status()
+        return r.json()
+
     def get_group_audit_logs(self, group_id: str, *, n: int = 60,
                              event_types: str = "", offset: int = 0,
                              start_date: str = "") -> dict:

@@ -277,6 +277,18 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     PRIMARY KEY (user_id, name)
 );
 
+-- What VRChat says is in an instance, cached briefly. The agents report who
+-- is in a room; this is the only independent check on whether they are in the
+-- room they think they are. Short-lived on purpose: a headcount minutes old
+-- would start failing agents for being right.
+CREATE TABLE IF NOT EXISTS instance_counts (
+    location   TEXT PRIMARY KEY,    -- world_id:instance_id
+    n_users    INTEGER,
+    capacity   INTEGER,
+    checked_at REAL,
+    error      TEXT
+);
+
 -- Small odds and ends the server has to remember between restarts, such as
 -- how far back through VRChat's audit log it has already read.
 CREATE TABLE IF NOT EXISTS tool_state (
@@ -762,6 +774,30 @@ class Database:
         r = self._one("SELECT MAX(created_at) AS t FROM pending_actions "
                       "WHERE group_id=?", (group_id,))
         return (r["t"] if r and r["t"] else 0.0)
+
+    # ---------------- what VRChat says is in a room ----------------
+    def note_instance_count(self, location: str, n_users: int,
+                            capacity: int = 0, error: str = "") -> None:
+        self._exec(
+            "INSERT INTO instance_counts (location, n_users, capacity, "
+            "checked_at, error) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(location) DO UPDATE SET n_users=excluded.n_users, "
+            "capacity=excluded.capacity, checked_at=excluded.checked_at, "
+            "error=excluded.error",
+            (location, int(n_users), int(capacity), time.time(), error))
+
+    def instance_counts(self, max_age: float = 120.0) -> dict:
+        """Fresh headcounts by location. Stale rows are left out rather than
+        returned old: a wrong number here gets an agent wrongly ignored."""
+        rows = self._query("SELECT * FROM instance_counts WHERE checked_at > ?",
+                           (time.time() - max_age,))
+        return {r["location"]: dict(r) for r in rows if not r["error"]}
+
+    def instance_count_ages(self) -> dict:
+        """Every cached row including stale and failed ones, for the page to
+        say why it has no number rather than saying nothing."""
+        return {r["location"]: dict(r)
+                for r in self._query("SELECT * FROM instance_counts")}
 
     # ---------------- odds and ends the server remembers ----------------
     def get_state(self, key: str, default: str = "") -> str:

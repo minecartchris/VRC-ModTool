@@ -125,6 +125,37 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         """
         return [r for r in database.all_rosters() if _roster_allowed(cfg, r)]
 
+    def headcounts(request: Request, rosters: list) -> dict:
+        """VRChat's own count for the rooms being reported.
+
+        Read with whoever is looking at the page, the same borrowed-session
+        trick the rest of this uses, and cached for a minute so ten moderators
+        refreshing does not become ten calls a second. No live session, no
+        numbers — and no filtering, which is the safe way round.
+        """
+        fresh = database.instance_counts(COUNT_MAX_AGE)
+        wanted = {f"{r['world_id']}:{r['instance_id']}" for r in rosters
+                  if r.get("world_id") and r.get("instance_id")
+                  and _roster_live(r, publisher)}
+        missing = wanted - set(fresh)
+        if not missing:
+            return fresh
+        api = sessions.client(request.cookies.get(SESSION_COOKIE))
+        if not api:
+            return fresh
+        for location in list(missing)[:COUNT_MAX_LOOKUPS]:
+            world_id, _, instance_id = location.partition(":")
+            try:
+                info = api.get_instance(world_id, instance_id) or {}
+            except Exception as e:
+                # Remembered as a failure so the next render does not try the
+                # same dead instance again a second later.
+                database.note_instance_count(location, 0, 0, str(e)[:120])
+                continue
+            database.note_instance_count(location, info.get("n_users", 0) or 0,
+                                         info.get("capacity", 0) or 0)
+        return database.instance_counts(COUNT_MAX_AGE)
+
     def pending_rows(actor_id: str = "", include_done: bool = False) -> list:
         """The prompt list, with anything too old dropped on the way past.
 
@@ -740,7 +771,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         sess = require(request)
         rosters = shown_rosters()
         current, choices = _pick_instance(rosters, sess["user_id"],
-                                          instance or reporter, publisher)
+                                          instance or reporter, publisher,
+                                          headcounts(request, rosters))
         cached = database.all_users()
         latest = agecheck.latest_by_user(database.all_age_checks())
         note_word = (cfg.get("note_filter") or "").strip().lower()
@@ -1371,6 +1403,12 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 # ---------------- helpers ----------------
 #: VRChat writes the owning group into the instance id itself, e.g.
 #: "73644~group(grp_7112…)~groupAccessType(public)~region(us)".
+#: How long a headcount is worth trusting, and how many rooms to look up in
+#: one render. Both small: the number is only useful while it is current, and
+#: a page load should not turn into a dozen API calls.
+COUNT_MAX_AGE = 60.0
+COUNT_MAX_LOOKUPS = 4
+
 _INSTANCE_GROUP = re.compile(r"~group\((grp_[0-9a-fA-F-]+)\)")
 
 
@@ -1423,7 +1461,47 @@ def _instance_key(roster: dict) -> str:
     return f"{world}:{inst}" if (world or inst) else f"client:{roster['client_id']}"
 
 
-def _merge_rosters(rosters: list[dict], publisher) -> list[dict]:
+#: How far an agent's list may sit from VRChat's headcount before it stops
+#: counting as a description of that room. Logs flush at different moments and
+#: the headcount itself is a few seconds behind, so a small gap is normal; the
+#: percentage keeps the allowance sane in a room of eighty.
+COUNT_TOLERANCE = 4
+COUNT_TOLERANCE_SHARE = 0.15
+
+
+def _trust_reporters(reporters: list[dict], truth: int | None) -> tuple:
+    """Which of these agents is actually in this room, and which is lost.
+
+    An agent reports the room it last read out of its own log. When it is
+    wrong — a stale instance id, a log it stopped following — it does not
+    report nothing, it reports a *different room's* list, which is worse: the
+    names are real, they are just not here.
+
+    VRChat's headcount is the only outside opinion available, so it is the
+    tiebreaker. With one reporter there is nothing to compare and it is kept
+    whatever the number says; the discrepancy is shown instead, because
+    dropping the only view of a room leaves the page blank and nobody screened.
+    """
+    if truth is None or len(reporters) < 2:
+        return reporters, []
+
+    allowance = max(COUNT_TOLERANCE, int(truth * COUNT_TOLERANCE_SHARE))
+    scored = [(abs(len(r["players"]) - truth), r) for r in reporters]
+    closest = min(off for off, _ in scored)
+    if closest > allowance:
+        # Everybody disagrees with VRChat. That is a reason to doubt the
+        # headcount, or the room just changed — not a reason to believe one
+        # agent over another.
+        return reporters, []
+
+    keep = [r for off, r in scored if off <= allowance]
+    lost = [{"reporter": r, "off_by": off, "said": len(r["players"])}
+            for off, r in scored if off > allowance]
+    return keep, lost
+
+
+def _merge_rosters(rosters: list[dict], publisher,
+                   counts: dict | None = None) -> list[dict]:
     """One entry per instance, however many agents are reporting it.
 
     Two moderators in the same room see the same list. Their logs are not
@@ -1446,6 +1524,13 @@ def _merge_rosters(rosters: list[dict], publisher) -> list[dict]:
         # 184 names for a 36-player instance. With none live at all, the most
         # recent one is the last thing known, and the page says it is stale.
         current = live or reporters[:1]
+
+        # What VRChat says is in there, if anybody has asked recently. With
+        # two agents claiming one room and only one of them right, this is
+        # what tells them apart.
+        truth = (counts or {}).get(f"{current[0]['world_id']}:{current[0]['instance_id']}")
+        headcount = truth.get("n_users") if truth else None
+        current, lost = _trust_reporters(current, headcount)
 
         players, seen = [], set()
         for r in current:
@@ -1473,6 +1558,10 @@ def _merge_rosters(rosters: list[dict], publisher) -> list[dict]:
             "updated_at": max(r["updated_at"] for r in current),
             "seen_at": max(r["seen_at"] for r in current),
             "live": bool(live),
+            # What VRChat says, what we are showing, and anybody whose report
+            # was set aside for describing somewhere else.
+            "headcount": headcount,
+            "ignored": lost,
         })
 
     out.sort(key=lambda i: i["seen_at"], reverse=True)
@@ -1480,7 +1569,8 @@ def _merge_rosters(rosters: list[dict], publisher) -> list[dict]:
 
 
 def _pick_instance(rosters: list[dict], user_id: str, want: str,
-                   publisher) -> tuple[dict | None, list[dict]]:
+                   publisher, counts: dict | None = None
+                   ) -> tuple[dict | None, list[dict]]:
     """Which room this moderator is looking at, and what else is live.
 
     Yours by default — the room you are standing in is the one you need, and
@@ -1492,7 +1582,7 @@ def _pick_instance(rosters: list[dict], user_id: str, want: str,
     alternative for them is an empty page. Where there is a choice they are
     asked to make it rather than being handed an arbitrary room.
     """
-    instances = _merge_rosters(rosters, publisher)
+    instances = _merge_rosters(rosters, publisher, counts)
     live = [i for i in instances if i["live"]]
     if want:
         chosen = next((i for i in instances if i["key"] == want), None)
