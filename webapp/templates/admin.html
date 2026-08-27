@@ -77,6 +77,65 @@
 
 <section class="card">
   <div class="card-head">
+    <h2 style="margin:0">Let someone in</h2>
+    <span class="dim">{{ allowed|length }} added by hand</span>
+  </div>
+  <p class="dim" style="margin-top:0">Sign-in normally needs the staff group.
+    Adding a VRChat id here lets that account in without it — useful for a
+    trial moderator, or somebody helping for one event. It is a way in and
+    nothing else: they arrive as an ordinary moderator, not an admin.</p>
+
+  {% if allowed_result == "added" %}
+  <p class="banner banner-ok">{{ icon("check", 18) }} Added. They can sign in now.</p>
+  {% elif allowed_result == "removed" %}
+  <p class="banner banner-warn">{{ icon("warning", 18) }} Removed. They cannot
+    sign in any more unless they are in the staff group.</p>
+  {% elif allowed_result == "bad_id" %}
+  <p class="banner banner-error">{{ icon("warning", 18) }} That had no
+    <code>usr_</code> id in it. Paste their profile link, or the id itself.</p>
+  {% endif %}
+
+  <form method="post" action="/admin/allow" class="row-form" style="margin-top:12px">
+    <label class="grow" style="margin:0">
+      <input name="user_id" required
+             placeholder="usr_… or a link to their VRChat profile">
+    </label>
+    <label class="grow" style="margin:0">
+      <input name="note" placeholder="why, so this makes sense later (optional)">
+    </label>
+    <button class="btn-primary" type="submit">Let them in</button>
+  </form>
+
+  {% if allowed %}
+  <ul class="list" style="margin-top:16px">
+    {% for a in allowed %}
+    <li>
+      {{ icon("group", 18) }}
+      <span>
+        <strong>{{ a.name or "id only" }}</strong>
+        <div class="uid">{{ a.user_id }}</div>
+        {% if a.note %}<div class="note">{{ a.note }}</div>{% endif %}
+      </span>
+      <span class="dim" style="margin-left:auto">
+        {% if a.added_by %}added by {{ a.added_by }}{% endif %}
+        {% if a.added_at %} · {{ fmt_ago(a.added_at) }}{% endif %}
+      </span>
+      <form method="post" action="/admin/allow" style="display:inline"
+            onsubmit="return confirm('Stop {{ a.name or a.user_id }} signing in?')">
+        <input type="hidden" name="remove" value="{{ a.user_id }}">
+        <button class="btn-sm btn-danger" type="submit">Remove</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="dim" style="margin-top:12px">Nobody has been let in by hand.
+    Everyone signing in is doing it through the staff group.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-head">
     <h2 style="margin:0">Roster agents</h2>
     <span class="dim">{{ keys|length }} paired</span>
   </div>

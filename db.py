@@ -200,6 +200,20 @@ CREATE TABLE IF NOT EXISTS admins (
     added_at REAL
 );
 
+-- People an admin has let into the tool by hand, by VRChat id.
+--
+-- Separate from `admins` on purpose: this grants a way in and nothing else.
+-- It is for the moderator who is not in the staff group yet, or never will be
+-- — a trial mod, somebody helping for one event — and making them an admin to
+-- get them through the door would hand them the whole Admin page with it.
+CREATE TABLE IF NOT EXISTS allowed_users (
+    user_id  TEXT PRIMARY KEY,
+    name     TEXT,
+    note     TEXT,
+    added_by TEXT,
+    added_at REAL
+);
+
 -- A roster agent waiting to be let in. The agent starts one on first launch,
 -- shows a short code and a link, and polls; a signed-in moderator opens the
 -- link and approves, which is what hands over their key.
@@ -963,6 +977,28 @@ class Database:
 
     def remove_admin(self, user_id: str) -> None:
         self._exec("DELETE FROM admins WHERE user_id=?", (user_id,))
+
+    # ---------------- let in by hand ----------------
+    def allow_user(self, user_id: str, name: str = "", note: str = "",
+                   added_by: str = "") -> None:
+        """Let this VRChat id sign in. Re-adding refreshes the name and note
+        rather than making a second row."""
+        self._exec(
+            "INSERT INTO allowed_users (user_id, name, note, added_by, added_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "name=excluded.name, note=excluded.note",
+            (user_id, name or "", note or "", added_by or "", time.time()))
+
+    def remove_allowed_user(self, user_id: str) -> None:
+        self._exec("DELETE FROM allowed_users WHERE user_id=?", (user_id,))
+
+    def allowed_users(self) -> list[dict]:
+        return [dict(r) for r in self._query(
+            "SELECT * FROM allowed_users ORDER BY added_at DESC")]
+
+    def is_allowed(self, user_id: str) -> bool:
+        return bool(user_id) and bool(self._one(
+            "SELECT 1 FROM allowed_users WHERE user_id=?", (user_id,)))
 
     # ---------------- agent pairing ----------------
     def create_pairing(self, code: str, secret_hash: str, client_name: str,

@@ -1036,6 +1036,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             candidates=[u for u in database.known_users()
                         if u["user_id"] not in {a["user_id"] for a in admins}],
             keys=database.agent_keys(),
+            allowed=database.allowed_users(),
+            allowed_result=request.query_params.get("allowed", ""),
             queue=database.group_actions(limit=40),
             queue_status=groupwork.status(),
             auto_ban=bool(cfg.get("auto_ban_overage")),
@@ -1087,6 +1089,47 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             if user_id in known:           # never appoint an id we've not seen
                 database.add_admin(user_id, known[user_id], sess["name"])
         return RedirectResponse("/admin", status_code=303)
+
+    @app.post("/admin/allow")
+    def admin_allow(request: Request, user_id: str = Form(""),
+                    note: str = Form(""), remove: str = Form("")):
+        """Let somebody into the tool by VRChat id, or take them back out.
+
+        Any admin can do this. It is deliberately not the admin list: this
+        grants a way in and nothing else, so a trial moderator can be let
+        through the door without being handed this page as well.
+        """
+        sess = require(request)
+        if not is_admin(sess["user_id"]):
+            return RedirectResponse("/admin", status_code=303)
+
+        if remove:
+            database.remove_allowed_user(remove)
+            return RedirectResponse("/admin?allowed=removed", status_code=303)
+
+        # A moderator sending an id is as likely to paste the profile link.
+        uid = _user_id_from(user_id)
+        if not uid:
+            return RedirectResponse("/admin?allowed=bad_id", status_code=303)
+
+        # Put a name to it where we can: from what the tool already knows,
+        # then from VRChat itself using this admin's own session. A row that
+        # is only an id is still valid, just harder to read later.
+        name = ""
+        for known in database.known_users():
+            if known["user_id"] == uid:
+                name = known["name"] or ""
+                break
+        if not name:
+            api = sessions.client(request.cookies.get(SESSION_COOKIE))
+            if api:
+                try:
+                    name = (api.get_user(uid) or {}).get("displayName", "")
+                except Exception:
+                    name = ""          # unreachable or unknown id; store as-is
+
+        database.allow_user(uid, name, note.strip()[:200], sess["name"])
+        return RedirectResponse("/admin?allowed=added", status_code=303)
 
     # ---------------- agent pairing ----------------
     # The agent asks for a code, shows it with a link, and polls. A moderator

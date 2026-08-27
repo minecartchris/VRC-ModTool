@@ -167,6 +167,15 @@ class SessionManager:
             raise AuthError(f"Could not reach VRChat: {e}") from e
         return self._finish(api)
 
+    def is_let_in(self, user_id: str) -> bool:
+        """On the allow list an admin manages from the Admin page."""
+        if not user_id:
+            return False
+        try:
+            return bool(self.db.is_allowed(user_id))
+        except Exception:
+            return False        # a database hiccup must not grant access
+
     def is_admin(self, user_id: str) -> bool:
         """Admins from the config and from the table, same as the server's own
         check — kept here too because sign-in happens before any of that."""
@@ -203,6 +212,12 @@ class SessionManager:
             raise AuthError(f"Signed in, but couldn't read your groups: {e}"
                             ) from e
         matched = staff_groups(groups, want)
+        if not matched and self.is_let_in(uid):
+            # Let in by an admin, by id. This is a way through the door and
+            # nothing more: they arrive as an ordinary moderator.
+            matched = ["an admin let them in"]
+            print(f"[auth] {name} ({uid}) signed in from the allow list",
+                  flush=True)
         if not matched and self.is_admin(uid):
             # Being on the admin list is its own way in. An admin who has left
             # the staff group, or whose group read came back short, should not
@@ -216,8 +231,9 @@ class SessionManager:
             print(f"[auth] {name} ({uid}) signed in from the admin list, "
                   f"not the staff group", flush=True)
         if not matched:
-            raise AuthError(f"{name} is not in the staff group and is not on "
-                            f"the admin list. Access denied.")
+            raise AuthError(f"{name} is not in the staff group and has not "
+                            f"been let in. Ask an admin to add "
+                            f"{uid} on the Admin page. Access denied.")
 
         token = secrets.token_urlsafe(32)
         ttl = float(self.cfg.get("session_hours", 12)) * 3600
