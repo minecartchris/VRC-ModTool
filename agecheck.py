@@ -55,19 +55,27 @@ def record(database: "db.Database", *, name: str, user_id: str = "",
            checked_by: str = "", checked_by_id: str = "",
            source: str = "web", note: str = "",
            players: list[dict] | None = None,
-           incident_id: str = "") -> tuple[dict, dict | None]:
+           incident_id: str = "",
+           file_incident: bool = True) -> tuple[dict, dict | None]:
     """Write the check (and its incident, if any). Returns (check, incident).
 
     Pass `incident_id` when the caller has already filed the incident — an
     audit-log kick is one event, and letting this create a second one would
     double-count it in every list and report.
+
+    `file_incident=False` records the verdict on its own. Marking somebody
+    over or under range is a note about a person, not a moderation action:
+    the web panel uses it constantly while screening a room, and every one of
+    those becoming an incident buried the incidents that were really kicks.
+    The desktop app leaves it on, because it pairs the verdict with a VRChat
+    screenshot and needs somewhere to attach it.
     """
     if verdict not in VERDICTS:
         raise ValueError(f"unknown verdict {verdict!r}")
     now = time.time()
     incident = None
 
-    if verdict in INCIDENT_VERDICTS and not incident_id:
+    if verdict in INCIDENT_VERDICTS and not incident_id and file_incident:
         age_txt = f" — reported age {reported_age}" if reported_age else ""
         subject = players or [{"name": name, "user_id": user_id,
                                "joined_at": now}]

@@ -9,9 +9,44 @@
     {%- if current.instance_id %} · instance #{{ short_instance(current.instance_id) }}{% endif %}
     · {{ counts.all }} present
     · {{ "read from this PC's VRChat log" if source_local
-         else "reported by " ~ (current.client_name or current.client_id) }}
+         else ("your instance" if mine
+               else "reported by " ~ (current.reporters|map(attribute='client_name')|select|unique|join(", ") or "an agent")) }}
+    {%- if current.reporters|length > 1 %}
+    · <span title="Their logs are merged: each client only sees the joins it rendered, so the union is more complete than either.">{{ current.reporters|length }} agents merged</span>
+    {%- endif %}
+    {%- if current.headcount is not none %}
+    · <span title="What VRChat itself says is in this instance.">VRChat says
+      {{ current.headcount }}</span>
+    {%- endif %}
     · updated {{ fmt_ago(current.updated_at) }}
   </p>
+
+  {% if current.headcount is not none
+        and (counts.all - current.headcount)|abs > current.allowance %}
+  <p class="banner banner-warn">{{ icon("warning", 18) }}
+    <span><strong>This list and VRChat disagree.</strong> The agents report
+      {{ counts.all }}; VRChat says {{ current.headcount }} are in the
+      instance. A few either way is normal — logs and the headcount are read
+      at different moments — but a large gap usually means an agent is
+      describing a room it has left.</span></p>
+  {% endif %}
+
+  {% if current.ignored %}
+  <p class="banner banner-warn">{{ icon("warning", 18) }}
+    <span><strong>Ignoring
+      {{ current.ignored|length }} agent{{ "" if current.ignored|length == 1 else "s" }}.</strong>
+      {% for bad in current.ignored %}
+      {{ bad.reporter.client_name or "An agent" }} reported {{ bad.said }}
+      player{{ "" if bad.said == 1 else "s" }} — {{ bad.why }}{{ "; " if not loop.last else "." }}
+      {% endfor %}
+      Their lists are not merged into this one. Restarting that agent is
+      usually all it takes.</span></p>
+  {% endif %}
+
+  {% elif choices %}
+  <p class="lead">You aren't running an agent, so there is no instance that is
+    yours. Pick whose to look at — each list is only the people in that
+    moderator's room.</p>
   {% else %}
   {% if local_reader %}
   <p class="lead">No instance to screen yet. Start VRChat and join a world —
@@ -25,6 +60,24 @@
   {% endif %}
   {% endif %}
 </div>
+
+{# Every instance being reported right now. One agent per moderator, so this is
+   also "who else is moderating somewhere at the moment". #}
+{% if choices|length > 1 or (choices and not current) %}
+<nav class="chips" aria-label="Which instance">
+  {% for i in choices %}
+  <a class="chip {{ 'on' if current and i.key == current.key }}"
+     href="/screening?instance={{ i.key|urlencode }}{% if show %}&show={{ show }}{% endif %}">
+    {{ icon("group", 14) }}
+    {{ i.world_name or "unknown world" }}
+    {%- if i.instance_id %} #{{ short_instance(i.instance_id) }}{% endif %} ·
+    {{ i.reporters|map(attribute='client_name')|select|unique|join(", ") or "an agent" }}
+    {%- if session.user_id in i.owners %} (you){% endif %}
+    <span class="chip-n">{{ i.players|length }}</span>
+  </a>
+  {% endfor %}
+</nav>
+{% endif %}
 
 {% if current and not live %}
 {# Screening against a roster of people who already left is worse than showing
@@ -47,7 +100,7 @@
                           ("under", "Under range"), ("over", "Over range")] %}
       {% if counts[key or "all"] or show == key or not key %}
       <a class="chip {{ 'on' if show == key }} c-{{ key or 'all' }}"
-         href="/screening{% if key %}?show={{ key }}{% endif %}">
+         href="/screening?{% if key %}show={{ key }}&{% endif %}{% if instance %}instance={{ instance|urlencode }}{% endif %}">
         {{ label }} <span class="chip-n">{{ counts[key or "all"] }}</span>
       </a>
       {% endif %}
@@ -56,6 +109,7 @@
 
   <form class="filters" method="get" action="/screening">
     {% if show %}<input type="hidden" name="show" value="{{ show }}">{% endif %}
+    {% if instance %}<input type="hidden" name="instance" value="{{ instance }}">{% endif %}
     <div class="field" style="flex:1;min-width:220px">
       {{ icon("search") }}
       <input name="q" value="{{ q }}" placeholder="Search name or user ID…">
@@ -80,7 +134,9 @@
     <tr id="p{{ r.user_id or loop.index }}"
         class="{{ 'row-unverified' if r.state != 'verified' }}">
       <td>
-        <strong>{{ r.name }}</strong>
+        {% if r.user_id %}
+        <a href="/player/{{ r.user_id }}?name={{ r.name|urlencode }}"><strong>{{ r.name }}</strong></a>
+        {% else %}<strong>{{ r.name }}</strong>{% endif %}
         {% if r.is_mod %}
         <span class="pill {{ 'pill-hr' if r.role == 'HR' else 'pill-mod' }}"
               title="{{ 'Listed as ' ~ r.role ~ ' on the moderator allowlist' if r.role in ('HR', 'Mod')

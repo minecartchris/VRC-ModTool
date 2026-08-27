@@ -1,0 +1,29 @@
+[Unit]
+# Deliberately not Requires= or After= the mod tool: this exists to be up when
+# that one is not, and a dependency would take it down with the thing it is
+# supposed to be reporting on.
+Description=Mod Suite status page (read-only, port 8090)
+After=network.target
+
+[Service]
+Type=simple
+User=modsuite
+Group=modsuite
+WorkingDirectory=/opt/modsuite/app/ops
+Environment=MODTOOL_DB=/var/lib/modsuite/modtool.db
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/modsuite/app/ops/monitor_web.py --port 8090
+Restart=always
+RestartSec=5
+
+# It reads; it never writes. The database is opened read-only in the code as
+# well, so this is belt and braces rather than the only guard.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadOnlyPaths=/var/lib/modsuite /opt/modsuite
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

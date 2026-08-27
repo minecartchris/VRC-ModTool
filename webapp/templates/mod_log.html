@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Mod Log — Mod Suite{% endblock %}
+{% block content %}
+<div>
+  <h1>Mod Log</h1>
+  <p class="lead">Every kick, warn and ban, who did it and why — and who has
+    been doing the work.</p>
+</div>
+
+<nav class="chips" aria-label="Period">
+  {% for key, label in [("7", "Last 7 days"), ("30", "Last 30 days"),
+                        ("90", "Last 90 days"), ("", "All time")] %}
+  <a class="chip {{ 'on' if days == key }}"
+     href="/mod-log?days={{ key }}{% if action %}&action={{ action }}{% endif %}{% if who %}&who={{ who|urlencode }}{% endif %}">
+    {{ label }}</a>
+  {% endfor %}
+</nav>
+
+<div class="card-head" style="margin-bottom:-4px">
+  <span class="dim">{{ people }} moderator{{ "" if people == 1 else "s" }} in
+    this period{% if not full %} · showing the top 10 of each{% endif %}</span>
+  <a class="btn-sm {{ 'btn-primary' if not full }}"
+     style="display:inline-block; padding:6px 12px"
+     href="/mod-log?days={{ days }}{% if action %}&action={{ action }}{% endif %}{% if who %}&who={{ who|urlencode }}{% endif %}{% if not full %}&full=1{% endif %}">
+    {% if full %}{{ icon("group", 14) }} Show the top 10
+    {% else %}{{ icon("group", 14) }} Show everyone{% endif %}</a>
+</div>
+
+<div class="grid-3">
+  {% for title, field, rows in boards %}
+  <section class="card">
+    <div class="card-head">
+      <h2 style="margin:0;font-size:18px;line-height:24px">{{ title }}</h2>
+      <span class="dim">
+        {%- if field == "checks" %}{{ rows|sum(attribute="checks") }} total
+        {%- else %}{{ totals[field] }} total{% endif %}</span>
+    </div>
+    {% if rows %}
+    <ul class="list">
+      {% for m in rows %}
+      <li {% if m.user_id == session.user_id %}style="background: color-mix(in srgb, var(--primary-container) 14%, transparent); border-radius: var(--r-md); padding-left: 6px; padding-right: 6px"{% endif %}>
+        <span class="dim num" style="min-width:18px">{{ loop.index }}</span>
+        {% if m.user_id %}<a href="/mod-log?who={{ m.user_id|urlencode }}&days={{ days }}">{{ m.name }}</a>
+        {% else %}{{ m.name }}{% endif %}
+        {% if m.user_id == session.user_id %}<span class="pill pill-ok">you</span>{% endif %}
+        <strong style="margin-left:auto"
+                {% if not m[field] %}class="dim"{% endif %}>{{ m[field] }}</strong>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="dim">Nothing in this period.</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+
+<p class="dim">Ranked separately on purpose: working through a room of age
+  checks and kicking somebody are different jobs, and one combined total makes
+  the quieter one look like less work.
+  {%- if not sees_all_bans %} Ban <em>counts</em> are everyone's; the entries
+  themselves are visible to admins and to whoever placed them.{% endif %}</p>
+
+<section class="card" style="display:flex;flex-direction:column;gap:16px">
+  <div class="card-head">
+    <h2 style="margin:0">The log</h2>
+    <span class="dim">{{ total_shown }} entr{{ "y" if total_shown == 1 else "ies" }}</span>
+  </div>
+
+  <nav class="chips" aria-label="Filter by action">
+    {% for key, label in [("", "Everything"), ("Kick", "Kicks"),
+                          ("Warn", "Warns"), ("Ban", "Bans")] %}
+    <a class="chip {{ 'on' if action == key }}"
+       href="/mod-log?action={{ key }}&days={{ days }}{% if who %}&who={{ who|urlencode }}{% endif %}">
+      {{ label }}
+      {%- if key %} <span class="chip-n">{{ counts[key] }}</span>{% endif %}</a>
+    {% endfor %}
+    {% if who %}
+    <a class="chip on" href="/mod-log?action={{ action }}&days={{ days }}">
+      only {{ who }} ✕</a>
+    {% endif %}
+  </nav>
+
+  <form class="filters" method="get" action="/mod-log">
+    <input type="hidden" name="days" value="{{ days }}">
+    {% if action %}<input type="hidden" name="action" value="{{ action }}">{% endif %}
+    {% if who %}<input type="hidden" name="who" value="{{ who }}">{% endif %}
+    <div class="field" style="flex:1;min-width:220px">
+      {{ icon("search") }}
+      <input name="q" value="{{ q }}" placeholder="Search a player, reason or moderator…">
+    </div>
+    <button type="submit">Search</button>
+    {% if q %}<a class="btn-sm" href="/mod-log?days={{ days }}"
+       style="display:inline-block;padding:8px 12px">Clear</a>{% endif %}
+  </form>
+
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>When</th><th>Action</th><th>Player</th><th>Reason</th>
+          <th>Moderator</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="nowrap dim" title="{{ fmt_time(r.created_at) }}">
+            {{ fmt_ago(r.created_at) }}</td>
+          <td>
+            <span class="pill {{ 'v-under' if r.action == 'Ban'
+                                 else ('v-over' if r.action == 'Warn' else 'st-new') }}">
+              {{ r.action }}</span>
+            {% if r.action == "Ban" and not sees_all_bans %}
+            <span class="pill pill-mut" title="Only you and admins see this">yours</span>
+            {% endif %}
+          </td>
+          <td>
+            {% for p in r.players[:3] %}
+              {% if p.user_id %}<a href="/player/{{ p.user_id }}">{{ p.name }}</a>
+              {% else %}{{ p.name }}{% endif %}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+            {% if r.players|length > 3 %}
+            <span class="dim">+{{ r.players|length - 3 }} more</span>{% endif %}
+            {% if not r.players %}<span class="dim">nobody recorded</span>{% endif %}
+          </td>
+          <td class="note">{{ r.reason or "—" }}</td>
+          <td class="nowrap">
+            <a href="/mod-log?who={{ (r.reported_by_id or r.reported_by)|urlencode }}&days={{ days }}">
+              {{ r.reported_by or "unknown" }}</a>
+            {% if r.origin == "vrchat-audit" %}
+            <div class="uid" title="Read from VRChat's group audit log">from the audit log</div>
+            {% elif r.origin == "teenchillout" %}
+            <div class="uid">imported</div>
+            {% endif %}
+          </td>
+          <td class="num"><a class="link" href="/incidents/{{ r.id }}">open</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if total_shown > rows|length %}
+  <p class="dim">Showing the {{ rows|length }} most recent of
+    {{ total_shown }}. Narrow it with the filters or the search.</p>
+  {% endif %}
+  {% else %}
+  <p class="dim">Nothing matches.</p>
+  {% endif %}
+
+  {% if not sees_all_bans %}
+  <p class="dim">{{ icon("help", 14) }} Bans you did not file are not listed —
+    they are visible to admins and to whoever placed them.</p>
+  {% endif %}
+</section>
+{% endblock %}

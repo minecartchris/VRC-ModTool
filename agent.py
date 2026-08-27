@@ -9,12 +9,19 @@ It is not the desktop app: no Vosk model, no audio capture, no Tkinter, no
 clipping. It tails the VRChat log and POSTs the roster. One moderator running
 this gives every browser a live Screening page.
 
-    python agent.py --server https://mods.example.com --token YOUR_SYNC_TOKEN
+    python agent.py --server https://mods.example.com
 
-The token is `sync_token` from the server's web_config.json. Settings are
-remembered in agent_config.json, so after the first run:
+On first run it prints a link. A moderator opens that link in a browser where
+they are already signed in, and this PC is handed a key that can do one thing:
+report a roster. The key travels server-to-agent, so nobody has to read it off
+a screen or paste it into a chat. Settings are remembered in agent_config.json,
+so after that:
 
     python agent.py
+
+`--pair` sets the PC up again — after a key is revoked, say. A key can also be
+pasted at the first-run prompt, or given as `--token`, for a machine with no
+browser.
 
 Needs only `requests` (pip install requests) plus Python 3.10+.
 """
@@ -30,6 +37,17 @@ from pathlib import Path
 import requests
 
 import vrc_log
+
+# VRChat world names are full of emoji and the Windows console this runs in is
+# usually cp1252, where printing one raises UnicodeEncodeError and kills the
+# agent mid-report. Degrade to "?" instead. Our own strings stay ASCII so they
+# read correctly whatever the console is.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, OSError):       # not a real console, e.g. piped
+        pass
+
 
 def _base_dir() -> Path:
     """Where to keep agent_config.json.
@@ -59,6 +77,78 @@ except ImportError:
 HEARTBEAT = 30.0
 #: How often to look for a change worth reporting immediately.
 POLL = 3.0
+#: How often to ask the server whether the pairing link has been opened yet.
+PAIR_POLL = 3.0
+
+
+def pair(session: requests.Session, server: str, name: str) -> str:
+    """Trade a link for a key, without the human ever handling the key.
+
+    We ask the server for a code, print the link, and wait. A moderator opens
+    it in a browser where they are already signed in, and the key comes back
+    down this connection — so it is never on screen, in a screenshot or in a
+    chat message. The secret below is what stops somebody who merely sees the
+    code from collecting the key instead of us.
+    """
+    try:
+        r = session.post(f"{server}/api/agent/pair/start",
+                         json={"client_name": name}, timeout=20)
+        r.raise_for_status()
+        start = r.json()
+    except requests.RequestException as e:
+        raise SystemExit(f"Couldn't reach {server}: {e}")
+
+    print("\n  Open this link while signed in to the mod panel:\n")
+    print(f"      {start['url']}\n")
+    print(f"  (code {start['code']}, good for "
+          f"{int(start.get('expires_in', 600)) // 60} minutes)")
+    try:
+        import webbrowser
+        webbrowser.open(start["url"])
+        print("  Tried to open it in your browser.")
+    except Exception:
+        pass
+    print("\n  Waiting for approval... Ctrl+C to give up.")
+
+    deadline = time.time() + float(start.get("expires_in", 600))
+    while time.time() < deadline:
+        time.sleep(PAIR_POLL)
+        try:
+            r = session.post(f"{server}/api/agent/pair/poll",
+                             json={"code": start["code"],
+                                   "secret": start["secret"]}, timeout=20)
+        except requests.RequestException:
+            continue                      # keep waiting through a blip
+        if r.status_code == 410:
+            raise SystemExit(f"  {r.json().get('error', 'that code is done')}")
+        if not r.ok:
+            raise SystemExit(f"  pairing failed ({r.status_code})")
+        data = r.json()
+        if data.get("status") == "approved":
+            print(f"\n  Approved by {data.get('name') or 'a moderator'}. "
+                  "This PC now reports as them.")
+            return data["token"]
+    raise SystemExit("  That code expired. Run this again for a new one.")
+
+
+def first_run(cfg: dict, *, force_pair: bool = False) -> dict:
+    """Ask for whatever is still missing, then pair or take a pasted key."""
+    if not cfg["server"]:
+        entered = input("Mod panel address (e.g. https://mods.example.com): ")
+        cfg["server"] = entered.strip().rstrip("/")
+        if not cfg["server"]:
+            raise SystemExit("Need the server address to do anything.")
+
+    if not force_pair:
+        print(f"\nFirst run - this PC is not set up for {cfg['server']} yet.")
+        print("  [Enter]  set it up in your browser (recommended)")
+        print("  or paste a key from Settings -> Your agents")
+        answer = input("\n> ").strip()
+        if answer:
+            cfg["token"] = answer
+            return cfg
+    cfg["token"] = pair(requests.Session(), cfg["server"], cfg["name"])
+    return cfg
 
 
 def load_settings(args) -> dict:
@@ -101,7 +191,8 @@ def save_settings(cfg: dict) -> None:
         print(f"  (couldn't save {CONFIG_PATH.name}: {e})")
 
 
-def post_roster(session: requests.Session, cfg: dict, snap: dict) -> None:
+def post_roster(session: requests.Session, cfg: dict, snap: dict) -> str:
+    """Send one roster. Returns the server's reason for discarding it, if any."""
     r = session.post(
         f"{cfg['server']}/api/sync/roster",
         json={"client_id": cfg["client_id"], "client_name": cfg["name"],
@@ -111,11 +202,16 @@ def post_roster(session: requests.Session, cfg: dict, snap: dict) -> None:
                          "players": snap["players"]}},
         headers={"X-Sync-Token": cfg["token"]}, timeout=20)
     if r.status_code == 401:
-        raise SystemExit("Server rejected the token. Check `sync_token` in the "
-                         "server's web_config.json.")
+        raise SystemExit("The server rejected this PC's key - it was most "
+                         "likely revoked in the panel.\nRun this again with "
+                         "--pair to set it up afresh.")
     if r.status_code == 503:
         raise SystemExit("Server has the sync API disabled (no sync_token set).")
     r.raise_for_status()
+    try:
+        return r.json().get("ignored") or ""
+    except ValueError:
+        return ""
 
 
 def main() -> None:
@@ -126,12 +222,13 @@ def main() -> None:
     ap.add_argument("--name", help="how this PC appears in the web UI")
     ap.add_argument("--once", action="store_true",
                     help="send one roster and exit")
+    ap.add_argument("--pair", action="store_true",
+                    help="set this PC up again, even if it already has a key")
     args = ap.parse_args()
 
     cfg = load_settings(args)
-    if not cfg["server"] or not cfg["token"]:
-        ap.error("need --server and --token the first time (they are then "
-                 f"remembered in {CONFIG_PATH.name})")
+    if args.pair or not cfg["token"] or not cfg["server"]:
+        cfg = first_run(cfg, force_pair=args.pair)
     save_settings(cfg)
 
     if not vrc_log.LOG_DIR.exists():
@@ -150,6 +247,7 @@ def main() -> None:
     last_sent = 0.0
     complained = False
     waiting = True
+    said_ignored = ""          # instance we have already explained away
     # --once still has to wait for the watcher to parse the log; exiting on the
     # first empty snapshot would send nothing at all.
     deadline = time.time() + 30 if args.once else None
@@ -163,10 +261,19 @@ def main() -> None:
             # would overwrite a real roster from another reporter.
             if due and (snap["players"] or snap["world_id"]):
                 try:
-                    post_roster(session, cfg, snap)
-                    if snap["revision"] != last_revision or complained:
+                    ignored = post_roster(session, cfg, snap)
+                    if ignored and snap["instance_id"] != said_ignored:
+                        # Said once per instance, not every heartbeat: this is
+                        # normal when a moderator steps into a private world.
+                        said_ignored = snap["instance_id"]
                         print(f"  [{time.strftime('%H:%M:%S')}] "
-                              f"{snap['world_name'] or 'unknown world'} — "
+                              f"{snap['world_name'] or 'this world'} - "
+                              f"{ignored}")
+                    elif not ignored and (snap["revision"] != last_revision
+                                          or complained):
+                        said_ignored = ""
+                        print(f"  [{time.strftime('%H:%M:%S')}] "
+                              f"{snap['world_name'] or 'unknown world'} - "
                               f"{len(snap['players'])} players")
                     last_revision, last_sent, complained = (
                         snap["revision"], time.time(), False)
@@ -179,7 +286,7 @@ def main() -> None:
                         complained = True
             elif waiting and deadline is None and time.time() - last_sent > 20:
                 last_sent = time.time()     # reuse as a "said this" marker
-                print("  waiting for VRChat to join a world…")
+                print("  waiting for VRChat to join a world...")
             if deadline and time.time() > deadline:
                 print("  gave up waiting for an instance (is VRChat in a "
                       "world?)")

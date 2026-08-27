@@ -16,7 +16,10 @@
 {% endif %}
 
 <section class="card">
-  <form method="post" action="/kick-log" id="kicklog">
+  <form method="post" action="/kick-log" id="kicklog" data-once>
+    {# Identifies this rendered form, so a double-clicked Submit files one log
+       rather than two. A new page render is a new id. #}
+    <input type="hidden" name="form_id" value="{{ form_id }}">
     <h2>Action</h2>
     <div class="chips">
       {% for a in ["Kick", "Warn", "Ban"] %}
@@ -33,9 +36,9 @@
         <input name="names" placeholder="Display name" autocomplete="off">
         <input name="user_ids" placeholder="Profile link or usr_… (optional)"
                autocomplete="off">
-        <button type="button" class="btn-sm lookup" title="Fetch the display name from the link">
+        <button type="button" class="lookup" title="Fetch the display name from the link">
           {{ icon("search", 14) }}</button>
-        <button type="button" class="btn-sm drop" title="Remove">✕</button>
+        <button type="button" class="drop" title="Remove">✕</button>
       </div>
     </div>
     <button type="button" id="add-target" class="btn-sm" style="margin-top:8px">
@@ -57,31 +60,8 @@
   </form>
 </section>
 
-<section class="card">
-  <div class="card-head">
-    <h2 style="margin:0">Your shortcuts</h2>
-    <span class="dim">only you see these</span>
-  </div>
-  {% if my_reasons %}
-  <div class="chips" style="margin-bottom:12px">
-    {% for r in my_reasons %}
-    <form method="post" action="/kick-log/shortcut" style="display:inline">
-      <input type="hidden" name="remove" value="{{ r }}">
-      <button class="chip" type="submit" title="Remove this shortcut">
-        {{ r }} <span class="danger-link">✕</span></button>
-    </form>
-    {% endfor %}
-  </div>
-  {% else %}
-  <p class="dim" style="margin-bottom:12px">None yet — the shared list above is
-    what everyone gets.</p>
-  {% endif %}
-  <form method="post" action="/kick-log/shortcut" class="row-form">
-    <input name="reason" class="grow" maxlength="60"
-           placeholder="Add a reason shortcut of your own" required>
-    <button type="submit">Add shortcut</button>
-  </form>
-</section>
+<p class="dim">Your own reason shortcuts live on
+  <a href="/settings">your settings page</a>.</p>
 
 {% if recent %}
 <section class="card">

@@ -41,20 +41,54 @@ DEFAULTS = {
     # moderator holding `group-audit-view` on that group. Empty disables it.
     "audit_group": "",
     "audit_poll_seconds": 60,
+    # How long a kick or warn keeps asking for a reason before it gives up.
+    # A day later nobody remembers which of four people it was, and a page of
+    # stale prompts is a page people stop reading. 0 turns expiry off.
+    "pending_expire_hours": 12,
+    # An agent whose player list has not changed in this long is treated as
+    # no longer reading the room. Beware in quiet instances: a healthy agent
+    # in a room where nobody joins or leaves looks identical to a stuck one.
+    # 0 turns the check off and goes back to trusting the heartbeat alone.
+    "roster_stale_minutes": 10,
     # Where a completed log is announced. Same embed format as the Teen
     # Chillout web tool, so both can post to the same channel.
     "discord_webhook_url": "",
     # Second channel for age removals, mirroring that tool's behaviour.
     "overaged_webhook_url": "",
+    # The group people are invited to and banned from. Empty falls back to
+    # `roster_group`, which is normally the same group again.
+    "action_group": "",
+    # Ban an overage kick's target from the group, once a moderator holding
+    # `group-bans-manage` is signed in. Off by default: it acts on a real
+    # person from an automated rule, so a deployment has to ask for it.
+    "auto_ban_overage": False,
+    # Queue the bans but do not carry them out. Everything an overage kick
+    # would ban is recorded and visible on the Admin page, and nothing is sent
+    # to VRChat — the way to watch what the rule *would* do to real people
+    # before letting it. Turning this off later releases the whole backlog, so
+    # look at it first.
+    "hold_bans": False,
+    # Invite anyone a moderator verifies as in-range, if they are not already
+    # in the group. Needs `group-invites-manage`.
+    "auto_invite_verified": False,
+    # The same brake for invites. Chiefly a stop button for a large backfill:
+    # set it and the queue stops sending, keeping every row for later.
+    "hold_invites": False,
+    # Actions that are logged but not announced, e.g. ["Warn"] where warns are
+    # routine and would drown the channel. Only the Discord post is skipped:
+    # the incident, the age check and the Kick Log page are unaffected.
+    "discord_skip_actions": [],
     # One-click chips on the Kick Log and the reason prompt. Same list the
     # Teen Chillout web tool offers (KickLogForm.jsx COMMON_REASONS), so
     # reasons stay comparable between the two tools. Moderators can add their
     # own on top, stored per account.
     "common_reasons": [
-        "Age Baiting", "Avatar", "Ban Evasion", "Cat Calling",
-        "Disrespect Staff", "Harassment", "Inappropriate Comments", "Overaged",
+        "Age Baiting", "Avatar", "Ban Evasion", "Blocked or muted mod",
+        "Cat Calling", "Disrespect Staff", "Harassment",
+        "Inappropriate Comments", "Loud audio", "Microphone spam", "Overaged",
         "Racist Remarks", "Refused Age Check", "Refusing Requests From Mod",
-        "Repeated use of slur", "Sexual Comments", "Spamming", "Underaged",
+        "Repeated use of slur", "Said slur", "Sexual Comments", "Spamming",
+        "Underaged",
     ],
     # Tail this machine's VRChat log for the instance roster, so Screening
     # works without the desktop app running. Ignored automatically when
@@ -74,6 +108,21 @@ DEFAULTS = {
     "media_roots": [],
     # Set True only behind HTTPS; marks the session cookie Secure.
     "https_only": False,
+    # Only accept rosters from instances this group owns, matched against the
+    # `~group(grp_…)` VRChat writes into the instance id. Empty accepts any.
+    # Normally the same group as `audit_group`: a moderator sitting in a
+    # private world or a friend's instance is not on duty, and that roster has
+    # no business on the Screening page.
+    "roster_group": "",
+    # VRChat ids who are always admins, whatever the admins table says — the
+    # backstop against the last admin removing themselves and locking the
+    # tool's own administration out. Everyone else is appointed in the UI.
+    "root_admins": [],
+    # The packaged roster agent, offered for download on a moderator's settings
+    # page. Empty falls back to dist/VRChatRosterAgent.exe next to the code,
+    # which is where build_agent.py leaves it; a hosted deployment points this
+    # at wherever the build was uploaded. Missing just hides the button.
+    "agent_exe": "",
 }
 
 

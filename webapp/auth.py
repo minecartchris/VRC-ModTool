@@ -167,8 +167,33 @@ class SessionManager:
             raise AuthError(f"Could not reach VRChat: {e}") from e
         return self._finish(api)
 
+    def is_let_in(self, user_id: str) -> bool:
+        """On the allow list an admin manages from the Admin page."""
+        if not user_id:
+            return False
+        try:
+            return bool(self.db.is_allowed(user_id))
+        except Exception:
+            return False        # a database hiccup must not grant access
+
+    def is_admin(self, user_id: str) -> bool:
+        """Admins from the config and from the table, same as the server's own
+        check — kept here too because sign-in happens before any of that."""
+        if not user_id:
+            return False
+        roots = {str(r).strip() for r in (self.cfg.get("root_admins") or [])}
+        if user_id in roots:
+            return True
+        try:
+            return bool(self.db.is_admin(user_id))
+        except Exception:
+            return False        # a database hiccup must not grant access
+
     def _finish(self, api: vrc_api.VRChatAPI) -> dict:
-        """Verify staff membership, then mint a session."""
+        """Verify staff membership, then mint a session.
+
+        Two ways in: the staff group, or the admin list. Everyone else is
+        refused."""
         user = api.user or api.check_session()
         if not user:
             raise AuthError("VRChat accepted the login but returned no user.")
@@ -187,11 +212,34 @@ class SessionManager:
             raise AuthError(f"Signed in, but couldn't read your groups: {e}"
                             ) from e
         matched = staff_groups(groups, want)
+        if not matched and self.is_let_in(uid):
+            # Let in by an admin, by id. This is a way through the door and
+            # nothing more: they arrive as an ordinary moderator.
+            matched = ["an admin let them in"]
+            print(f"[auth] {name} ({uid}) signed in from the allow list",
+                  flush=True)
+        if not matched and self.is_admin(uid):
+            # Being on the admin list is its own way in. An admin who has left
+            # the staff group, or whose group read came back short, should not
+            # be locked out of the tool they administer.
+            #
+            # The cost is that removing somebody from the staff group no longer
+            # removes their access on its own — they have to come off the admin
+            # list too. That is why this is announced in the log and printed on
+            # the page rather than being a silent exception.
+            matched = ["the admin list"]
+            print(f"[auth] {name} ({uid}) signed in from the admin list, "
+                  f"not the staff group", flush=True)
         if not matched:
-            raise AuthError(f"{name} is not in the staff group. Access denied.")
+            raise AuthError(f"{name} is not in the staff group and has not "
+                            f"been let in. Ask an admin to add "
+                            f"{uid} on the Admin page. Access denied.")
 
         token = secrets.token_urlsafe(32)
         ttl = float(self.cfg.get("session_hours", 12)) * 3600
+        # Remembered beyond the session, so somebody can be made an admin
+        # months after their last sign-in rather than only while logged in.
+        self.db.note_known_user(uid, name)
         self.db.purge_expired_sessions()
         self.db.create_session(token_hash(token), uid, name, matched, ttl,
                                encrypt_cookies(token, api.s.cookies))

@@ -48,3 +48,21 @@ dist/
 build/
 *.spec
 agent_baked.py
+
+# ---- Misc ----
+*.zip
+test.py
+NEXT-UPDATE.md
+# Quest agent (Android). Build output, the machine's SDK path, and the
+# upload key — losing that key means never updating the store listing, and
+# committing it means anybody can publish as us.
+quest-agent/build/
+quest-agent/app/build/
+quest-agent/.gradle/
+quest-agent/local.properties
+quest-agent/keystore.properties
+*.jks
+*.keystore
+quest-agent/release.local.json
+quest-agent/upload.jks
+quest-agent/ovr-platform-util.exe

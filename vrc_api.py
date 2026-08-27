@@ -154,8 +154,30 @@ class VRChatAPI:
         r.raise_for_status()
         return r.json()
 
+    def get_public_profile(self, user_id: str) -> dict:
+        """Public-facing profile: bio, pronouns, badges, trust tags.
+
+        Separate from get_user(): this is what the profile page shows anyone,
+        and it carries `pronouns` and VRChat's own `ageVerified` /
+        `ageVerificationStatus`, which /users/{id} does not.
+        """
+        r = self.s.get(f"{API}/profile/{user_id}", timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def get_instance(self, world_id: str, instance_id: str) -> dict:
+        """One instance as VRChat sees it: `n_users`, `capacity`, `ownerId`.
+
+        VRChat will not tell you *who* is in an instance — that is why the
+        roster agents exist — but it will tell you how many, and a headcount
+        is enough to catch an agent describing a room it left.
+        """
+        r = self.s.get(f"{API}/instances/{world_id}:{instance_id}", timeout=20)
+        r.raise_for_status()
+        return r.json()
+
     def get_group_audit_logs(self, group_id: str, *, n: int = 60,
-                             event_types: str = "",
+                             event_types: str = "", offset: int = 0,
                              start_date: str = "") -> dict:
         """Group audit log — who moderated whom, and when.
 
@@ -165,6 +187,8 @@ class VRChatAPI:
         with the target's display name only inside the description text.
         """
         params: dict = {"n": n}
+        if offset:
+            params["offset"] = offset
         if event_types:
             params["eventTypes"] = event_types
         if start_date:
@@ -173,6 +197,33 @@ class VRChatAPI:
                        timeout=20)
         r.raise_for_status()
         return r.json()
+
+    def group_member(self, group_id: str, user_id: str) -> dict | None:
+        """This user's membership of a group, or None if they are not in it.
+
+        404 is the ordinary "not a member" answer, not a failure — everything
+        else is left to raise, so a permission problem or an outage is never
+        mistaken for an absent member and acted on.
+        """
+        r = self.s.get(f"{API}/groups/{group_id}/members/{user_id}", timeout=15)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()
+
+    def invite_to_group(self, group_id: str, user_id: str) -> dict:
+        """Invite a user to a group. Needs `group-invites-manage`."""
+        r = self.s.post(f"{API}/groups/{group_id}/invites",
+                        json={"userId": user_id}, timeout=15)
+        r.raise_for_status()
+        return r.json() if r.content else {}
+
+    def ban_from_group(self, group_id: str, user_id: str) -> dict:
+        """Ban a user from a group. Needs `group-bans-manage`."""
+        r = self.s.post(f"{API}/groups/{group_id}/bans",
+                        json={"userId": user_id}, timeout=15)
+        r.raise_for_status()
+        return r.json() if r.content else {}
 
     def update_user_note(self, target_user_id: str, note: str) -> dict:
         """Set (replace) your private note on a user. Read the existing note

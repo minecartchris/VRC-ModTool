@@ -5,11 +5,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Mod Suite{% endblock %}</title>
-  {% if state_version %}<meta name="state-version" content="{{ state_version }}">{% endif %}
+  {% if state_version %}<meta name="state-version" content="{{ state_version }}"
+        data-instance="{{ roster_scope|default('', true) }}">{% endif %}
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='%23c7bfff' d='M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5z'/></svg>">
 </head>
-<body>
+<body class="{{ 'is-guest' if not session }}">
 {% if session %}
 <aside class="rail">
   <a class="brand" href="/">
@@ -18,11 +19,13 @@
   </a>
   <nav>
     {% for href, ico, text in [("/", "dashboard", "Dashboard"),
-                               ("/kick-log", "gavel", "Kick Log"),
+                               ("/kick-log", "block", "Kick Log"),
                                ("/pending", "help", "Pending"),
                                ("/incidents", "flag", "Incidents"),
                                ("/age-checks", "verified", "Age Checks"),
-                               ("/screening", "group", "Screening")] %}
+                               ("/screening", "group", "Screening"),
+                               ("/mod-log", "history", "Mod Log")]
+                              + ([("/admin", "settings", "Admin")] if am_admin else []) %}
       {% set active = (path == href) if href == "/" else path.startswith(href) %}
       <a class="nav {{ 'on' if active }}" href="{{ href }}">
         {{ icon(ico) }}<span class="t">{{ text }}</span>
@@ -42,8 +45,9 @@
 <header class="topbar">
   <button id="live-toggle" class="live-toggle" type="button">live</button>
   <div class="who">
-    {{ icon("account", 22) }}
-    <span class="name">{{ session.name }}</span>
+    <a class="me" href="/settings" title="Your settings, and the roster agent">
+      {{ icon("account", 22) }}
+      <span class="name">{{ session.name }}</span></a>
     {# Everyone who can sign in passed the staff-group check, so the badge is
        always earned — it names which group granted it. #}
     <span class="pill {{ 'pill-hr' if my_role == 'HR' else 'pill-mod' }}"

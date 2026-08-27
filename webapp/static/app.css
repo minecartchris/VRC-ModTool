@@ -5,7 +5,9 @@
  * Tokens are copied from that theme verbatim. Fonts and icons are deliberately
  * NOT loaded from Google: this server runs on a LAN and handles records about
  * minors, so it makes no third-party requests. Icons are inline SVG
- * (templates/_icons.html) and the type stack falls back to the system UI font.
+ * (templates/_icons.html), and Hanken Grotesk leads the type stack so it is
+ * used where it happens to be installed, falling back to the system UI font
+ * rather than fetching it.
  */
 :root {
   --background: #051424;
@@ -51,12 +53,14 @@
   --rail: 240px;
   --bar: 64px;
 
-  --r: 0.25rem;
-  --r-lg: 0.5rem;
-  --r-xl: 0.75rem;
+  --r-sm: 0.25rem;
+  --r-md: 0.5rem;
+  --r-lg: 0.75rem;
+  --r-xl: 1rem;
+  --r-full: 9999px;
 
-  --font: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system,
-          "Hanken Grotesk", sans-serif;
+  --font: "Hanken Grotesk", "Segoe UI Variable Display", "Segoe UI", system-ui,
+          -apple-system, sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -128,8 +132,22 @@ h3 { font-size: 14px; line-height: 20px; letter-spacing: 0.05em; font-weight: 60
 }
 .topbar .who { display: flex; align-items: center; gap: 10px; color: var(--on-surface-variant); }
 .topbar .who .name { color: var(--on-surface); font-weight: 600; font-size: 14px; }
+/* Your own name is the way into your settings, so it has to look clickable
+   without turning the top bar into a row of links. */
+.topbar .who .me {
+  display: flex; align-items: center; gap: 10px; color: inherit;
+  padding: 4px 10px; border-radius: var(--r-full);
+  border: 1px solid transparent; transition: background-color .2s, border-color .2s;
+}
+.topbar .who .me:hover {
+  background: var(--surface-container-high); border-color: var(--outline-variant);
+  text-decoration: none;
+}
 
 main { margin: var(--bar) 0 0 var(--rail); padding: var(--lg) var(--gutter) 64px; }
+/* Signed out there is no rail and no top bar, so main must not reserve room
+   for them — otherwise the sign-in card sits 240px right of centre. */
+.is-guest main { margin: 0; padding-top: 0; }
 .wrap { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--gutter); }
 
 @media (max-width: 900px) {
@@ -150,7 +168,7 @@ main { margin: var(--bar) 0 0 var(--rail); padding: var(--lg) var(--gutter) 64px
 /* ---------- role / status pills ---------- */
 .pill {
   display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
-  padding: 2px 10px; border-radius: 9999px;
+  padding: 2px 10px; border-radius: var(--r-full);
   font-size: 12px; line-height: 18px; font-weight: 600; letter-spacing: .04em;
   border: 1px solid transparent;
 }
@@ -174,9 +192,10 @@ main { margin: var(--bar) 0 0 var(--rail); padding: var(--lg) var(--gutter) 64px
 /* ---------- cards ---------- */
 .card {
   background: var(--surface-container-low); border: 1px solid var(--outline-variant);
-  border-radius: var(--r-xl); padding: var(--md);
+  border-radius: var(--r-md); padding: var(--md);
 }
-.card:hover { border-color: var(--outline); }
+.card > :first-child { margin-top: 0; }
+.card > :last-child { margin-bottom: 0; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sm); margin-bottom: var(--sm); }
 .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--gutter); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gutter); align-items: start; }
@@ -202,31 +221,49 @@ main { margin: var(--bar) 0 0 var(--rail); padding: var(--lg) var(--gutter) 64px
 a.metric:hover { text-decoration: none; }
 
 /* ---------- forms ---------- */
-input, select, textarea, button {
-  font: inherit; color: var(--on-surface); background: var(--surface);
-  border: 1px solid var(--outline-variant); border-radius: var(--r-lg);
+/* Checkboxes and radios are excluded throughout: the box styling below is for
+   text-like controls, and the reason chips draw their own selected state. */
+input:not([type="checkbox"], [type="radio"], [type="hidden"]), select, textarea {
+  font: inherit; color: var(--on-surface); background: var(--surface-container-lowest);
+  border: 1px solid var(--outline-variant); border-radius: var(--r-md);
   padding: 8px 12px;
 }
-input::placeholder, textarea::placeholder { color: var(--outline); }
-input:focus, select:focus, textarea:focus {
+/* The native arrow is drawn by the OS in the OS's colours, which reads as a
+   light-theme control on this palette, so it is replaced with an inline one. */
+select {
+  -webkit-appearance: none; appearance: none; padding-right: 32px;
+  background-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23c8c4d9"><path d="M7 10l5 5 5-5H7z"/></svg>');
+  background-repeat: no-repeat; background-position: right 8px center;
+}
+input::placeholder, textarea::placeholder { color: var(--outline); opacity: .5; }
+input:not([type="checkbox"], [type="radio"], [type="hidden"]):focus,
+select:focus, textarea:focus {
   outline: none; border-color: var(--primary);
   box-shadow: 0 0 0 1px var(--primary);
 }
 textarea { width: 100%; resize: vertical; }
 label { display: block; font-size: 14px; line-height: 20px; letter-spacing: .05em;
         font-weight: 600; color: var(--on-surface-variant); margin-bottom: var(--xs); }
-label input, label select { display: block; width: 100%; margin-top: 6px; font-weight: 400; letter-spacing: normal; }
+label input:not([type="checkbox"], [type="radio"], [type="hidden"]), label select {
+  display: block; width: 100%; margin-top: 6px; font-weight: 400; letter-spacing: normal; }
 .field { position: relative; }
 .field .ic { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--on-surface-variant); }
-.field input { padding-left: 40px; }
+.field input:not([type="checkbox"], [type="radio"], [type="hidden"]) { padding-left: 40px; }
 
-button { cursor: pointer; background: var(--surface-container-high); transition: background-color .2s; }
+button {
+  font: inherit; color: var(--on-surface); background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant); border-radius: var(--r-lg);
+  padding: 8px 12px; cursor: pointer; transition: background-color .2s;
+}
 button:hover { background: var(--surface-variant); }
 .btn-primary {
   background: var(--primary-container); color: var(--on-primary-container);
   border-color: var(--primary-container); font-weight: 600;
 }
-.btn-primary:hover { background: color-mix(in srgb, var(--primary-container) 85%, white); }
+.btn-primary:hover {
+  background: var(--primary-container); border-color: var(--primary);
+  box-shadow: 0 0 10px 0 color-mix(in srgb, var(--primary) 30%, transparent);
+}
 .btn-danger { color: var(--error); border-color: var(--error); background: color-mix(in srgb, var(--error-container) 22%, transparent); }
 .btn-danger:hover { background: color-mix(in srgb, var(--error-container) 40%, transparent); }
 .btn-sm { padding: 4px 10px; font-size: 13px; }
@@ -249,8 +286,8 @@ button.link:hover { text-decoration: underline; background: none; }
 .chips { display: flex; gap: var(--xs); flex-wrap: wrap; }
 .chip {
   display: inline-flex; align-items: baseline; gap: 6px;
-  padding: 6px 14px; border-radius: 9999px; font-size: 14px;
-  background: var(--surface-container-low); border: 1px solid var(--outline-variant);
+  padding: 6px 14px; border-radius: var(--r-lg); font-size: 14px;
+  background: transparent; border: 1px solid var(--outline-variant);
   color: var(--on-surface-variant);
 }
 .chip:hover { border-color: var(--outline); text-decoration: none; }
@@ -303,22 +340,43 @@ img.shot, video.clip {
 }
 
 /* ---------- banners ---------- */
+/* The icon is taken out of flow so a banner that wraps onto several lines keeps
+   its text on one left edge instead of indenting only the first line. */
 .banner {
-  display: flex; align-items: center; gap: var(--xs);
-  padding: 12px var(--sm); border-radius: var(--r-lg); font-size: 14px;
+  position: relative;
+  padding: 12px var(--sm) 12px 40px; border-radius: var(--r-lg); font-size: 14px;
+}
+.banner svg {
+  position: absolute; left: var(--sm); top: 50%; transform: translateY(-50%);
 }
 .banner-warn { background: color-mix(in srgb, var(--tertiary-container) 30%, transparent); color: var(--on-tertiary-container); border: 1px solid var(--outline-variant); }
 .banner-error { background: color-mix(in srgb, var(--error-container) 22%, transparent); color: var(--error); border: 1px solid var(--error); }
 
+/* ---------- player profile ---------- */
+.profile-head { display: flex; gap: var(--sm); align-items: flex-start; flex-wrap: wrap; }
+.profile-icon {
+  width: 88px; height: 88px; border-radius: var(--r-lg); flex: none;
+  object-fit: cover; border: 1px solid var(--outline-variant);
+  background: var(--surface-container);
+}
+.profile-facts { display: flex; gap: 6px; flex-wrap: wrap; }
+/* VRChat bios carry their own line breaks and are user-written, so they are
+   rendered verbatim rather than reflowed. */
+pre.bio { max-height: 260px; white-space: pre-wrap; word-break: break-word; }
+h3 + pre.mono { margin-top: 0; }
+
 /* ---------- pending kicks / warns ---------- */
 .nav-count {
   margin-left: auto; font-size: 11px; font-weight: 700;
-  min-width: 20px; text-align: center; padding: 1px 6px; border-radius: 9999px;
+  min-width: 20px; text-align: center; padding: 1px 6px; border-radius: var(--r-full);
   background: var(--surface-variant); color: var(--on-surface-variant);
 }
 .nav-count.urgent { background: var(--error); color: #4a0006; }
 
+/* The prompt carries an action pinned to the right, so unlike the other
+   banners it stays a flex row. */
 .banner-ask {
+  display: flex; align-items: center; gap: var(--xs);
   background: color-mix(in srgb, var(--primary-container) 26%, transparent);
   color: var(--on-primary-container);
   border: 1px solid var(--primary);
@@ -340,26 +398,32 @@ img.shot, video.clip {
   display: inline-flex; align-items: center; gap: 6px; margin: 0;
   text-transform: none; letter-spacing: normal; font-weight: 400;
 }
-.reason-chip input { margin: 0; accent-color: var(--primary); }
+/* The control itself is hidden — the chip is the control, and a native tick
+   next to the label reads as a form rather than as the taxonomy it is. */
+.reason-chip input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
 /* :has keeps the selected state on the chip itself rather than the checkbox */
 .reason-chip:has(input:checked) {
-  background: var(--primary-container); border-color: var(--primary-container);
-  color: var(--on-primary-container); font-weight: 600;
+  background: var(--primary); border-color: var(--primary);
+  color: var(--on-primary); font-weight: 600;
+}
+/* Hiding the input hides its focus ring with it, so the chip draws one. */
+.reason-chip:has(input:focus-visible) {
+  outline: 2px solid var(--primary); outline-offset: 2px;
 }
 .reason-form .row-form .grow { flex: 1; min-width: 220px; width: auto; }
 
 .target-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .target-row input { flex: 1; min-width: 180px; }
-.target-row .btn-sm { flex: none; }
-#kicklog .row-form .grow { flex: 1; min-width: 240px; width: auto; }
-/* Radios use the same chip styling as the reason checkboxes. */
-.reason-chip input[type="radio"] { margin: 0; accent-color: var(--primary); }
+.target-row button { flex: none; }
+.row-form .grow { flex: 1; min-width: 240px; width: auto; }
+/* Radios use the same chip styling as the reason checkboxes, so the rule above
+   hides them too. */
 
 /* ---------- live refresh ---------- */
 .live-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; font-weight: 600; letter-spacing: .04em;
-  padding: 3px 12px 3px 10px; border-radius: 9999px;
+  padding: 3px 12px 3px 10px; border-radius: var(--r-full);
   background: color-mix(in srgb, var(--primary-container) 22%, transparent);
   color: var(--primary); border: 1px solid var(--primary-container);
 }
@@ -375,7 +439,7 @@ img.shot, video.clip {
 .stale-pill {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60;
   background: var(--primary-container); color: var(--on-primary-container);
-  border: 1px solid var(--primary); border-radius: 9999px;
+  border: 1px solid var(--primary); border-radius: var(--r-full);
   padding: 10px 20px; font-size: 14px; font-weight: 600;
   box-shadow: 0 6px 24px rgba(0, 0, 0, .5);
 }
@@ -391,5 +455,6 @@ img.shot, video.clip {
 }
 .auth-brand h1 { color: var(--primary); text-align: center; }
 .auth-brand .sub { font-size: 14px; letter-spacing: .18em; text-transform: uppercase; color: var(--on-surface-variant); margin-top: var(--xs); font-weight: 600; }
-.auth-wrap .card { box-shadow: 0 12px 40px rgba(0, 0, 0, .45); }
+.auth-wrap .card { box-shadow: 0 12px 40px rgba(0, 0, 0, .45); text-align: center; }
+.auth-wrap input { text-align: left; width: 100%; display: block; }
 .auth-wrap button[type="submit"] { width: 100%; margin-top: var(--xs); padding: 10px; }

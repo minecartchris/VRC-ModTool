@@ -70,9 +70,46 @@ So the roster always comes from something running on a PC that is in the world:
 2. **The roster agent** (`agent.py`), for the normal hosted case. See below.
 3. **The desktop app**, which pushes its roster when sync is on.
 
-Whichever reported most recently wins. Reporters heartbeat every 30s; a
-heartbeat updates liveness but deliberately does *not* count as a change, so
-open browsers don't reload twice a minute for nothing.
+**Only instances the group owns.** VRChat writes the owning group into the
+instance id itself — `73644~group(grp_…)~groupAccessType(public)~region(us)` —
+so the server checks it against:
+
+```json
+"roster_group": "grp_…"
+```
+
+Usually the same group as `audit_group`. Rosters from anywhere else are
+discarded on arrival rather than stored and hidden: a moderator who steps into
+a private world, a friend's instance or another group's room is not on duty,
+and that roster has no business in a database of age checks. The agent is told
+why and says so once, so "why is my instance not showing" has an answer on
+screen. Empty accepts any instance, which is the right default for someone
+running this for a single world of their own.
+
+**One screening list per instance.** A paired agent reports the room its own PC
+is in, and rosters are grouped by `world_id:instance_id` — not by who sent
+them. Screening shows the room you are standing in, which is the one you need;
+mixing a colleague's instance into it is how somebody gets screened against a
+list they were never on.
+
+Two moderators in *different* rooms therefore get different lists. Two in the
+*same* room get one merged list, and both count as its owner. The merge is a
+union rather than a most-recent-wins, because their logs genuinely differ: a
+client only learns about a join it rendered, so somebody who arrived behind you
+may be missing from your log and present in theirs. Players are matched on
+`usr_` id, falling back to display name when a log line carried no id.
+
+Where there is more than one live, a switcher across the top names each room and
+everyone reporting it, so you can look into a colleague's instance deliberately.
+A moderator with no agent of their own — screening from a phone, say — is asked
+which room rather than handed an arbitrary one; if only one is live, that is not
+a choice worth asking about, so they simply get it.
+
+Reporters heartbeat every 30s; a heartbeat updates liveness but deliberately
+does *not* count as a change, so open browsers don't reload twice a minute for
+nothing. The reload poll is scoped to the instance on screen, so a join in a
+world you are not looking at leaves your page alone — while a second agent in
+*your* room still refreshes you, since they share a scope.
 
 If no reporter is current the Screening page says so in red rather than quietly
 showing an old list — screening against people who already left is worse than
@@ -86,22 +123,55 @@ reporter at all, from any browser.
 For a hosted server, one moderator who is in the instance runs this:
 
 ```bash
-python agent.py --server https://mods.example.com --token YOUR_SYNC_TOKEN
+python agent.py --server https://mods.example.com
 ```
 
-(or `agent.bat --server ... --token ...` on Windows, then just double-click it
-afterwards — settings are remembered in `agent_config.json`).
+(or `agent.bat --server ...` on Windows, then just double-click it afterwards —
+settings are remembered in `agent_config.json`). It asks to be paired on first
+run; `--pair` sets it up again after a key is revoked.
 
 It tails the VRChat log and POSTs the roster. That is all it does: **no Vosk
 model, no audio capture, no Tkinter, no clipping** — its only dependency is
 `requests`. One person running it gives every browser a live Screening page,
 including moderators on phones who have nothing installed.
 
-The token is `sync_token` from the server's `web_config.json`.
+No token is needed: the first run pairs through the panel.
 
 Set `"read_local_log": false` to stop the server reading its own log (it is
 skipped automatically where there is no VRChat log directory, e.g. a Linux
 host, so a hosted deployment needs no configuration).
+
+## Running a client just to report the roster
+
+**VRChat has no headless mode.** No dedicated build, no `-batchmode`; the wiki
+lists Unity's own arguments as unsupported. Nor would it help: the roster
+exists precisely because a real client is in the room, and the names come out
+of that client's log and nowhere else.
+
+`roster_host.py` gets as close as the client allows — VRChat minimised and
+throttled with its own documented launch options, and the agent beside it:
+
+```bash
+python roster_host.py                    # both, supervised
+python roster_host.py --fps 1            # quieter still
+python roster_host.py --no-launch        # agent beside a client you opened
+```
+
+| Option | Why |
+|---|---|
+| `--no-vr` | desktop mode, so SteamVR never starts |
+| `--fps=5` | the real lever — the frame cap is what costs a GPU |
+| `--process-priority=-2`, `--main-thread-priority=-2` | idle; yields to whatever you are actually doing |
+| `--affinity=3` | two CPU threads rather than all of them |
+| `--profile=1` | a separate login, so your own VRChat is untouched |
+
+Five frames a second at idle priority, minimised, is the difference between a
+busy GPU and a background task. It is not zero, and nothing can make it zero.
+
+Two things the launch options cannot do for you: **log in on that profile
+once**, and **set its graphics quality low once** — both live in the client and
+persist per profile. If VRChat exits, the agent is stopped with it rather than
+left reporting a room nobody is in; `--restart` relaunches instead.
 
 ## Code changes and staying signed in
 
@@ -154,9 +224,11 @@ tools looking like one suite.
 Two deliberate differences: fonts and icons are **not** fetched from Google.
 This server handles records about minors on a LAN that may have no internet,
 so it makes no third-party requests — icons are inline SVG
-(`templates/_icons.html`) and the type stack falls back to the system UI font.
-An icon *font* that fails to load renders its ligature as raw text, which
-would leave the nav reading "dashboard flag group" in words.
+(`templates/_icons.html`), and Hanken Grotesk leads the type stack so it is
+used wherever it happens to be installed, falling back to the system UI font
+instead of being downloaded. An icon *font* that fails to load renders its
+ligature as raw text, which would leave the nav reading "dashboard flag group"
+in words.
 
 ## Who is a moderator
 
@@ -235,10 +307,16 @@ python run_web.py --host 0.0.0.0
 | Table | Contents |
 |---|---|
 | `incidents` | one row per trigger or manual filing; transcript, roster, world, clip/screenshot paths, status, notes |
-| `age_checks` | one row per verdict: player, over/under/in-range, reported age, who checked, which incident it filed |
+| `age_checks` | one row per verdict: player, over/under/in-range, reported age, who checked, and the kick it came from if it came from one |
 | `screening_users` | cached VRChat note + groups per user, so nobody is looked up twice |
-| `rosters` | last instance snapshot each desktop client reported |
+| `rosters` | one row per reporter: the instance that PC is in, and whose agent it is |
 | `web_sessions` | opaque session tokens; **no passwords, no VRChat cookies** |
+| `agent_keys` | one roster key per paired PC, revocable on its own |
+| `agent_pairings` | short-lived pairing codes, single-use |
+| `known_users` | everyone who has signed in, so admins can be appointed later |
+| `admins` | who can appoint admins, revoke any agent, and edit or delete a log |
+| `group_actions` | bans and invites waiting for somebody's VRChat permissions |
+| `user_prefs` | per-account UI choices, e.g. hiding other people's prompts |
 
 Your VRChat auth cookie lives in server memory only, for as long as the process
 runs. Restart the server and you stay signed in for browsing records, but
@@ -263,8 +341,13 @@ web writes statuses, notes and age checks.
 |---|---|
 | `/` | counts, live instance, recent activity |
 | `/incidents`, `/incidents/{id}` | list/search, detail with evidence, notes, status, paste-ready report |
-| `/age-checks` | log + record a check (over/under also files an incident) |
+| `/age-checks` | log + record a check |
 | `/screening` | live roster, filterable by verification state, with per-player verdict buttons and VRChat note tagging |
+| `/mod-log` | kicks, warns and bans, with leaderboards; bans filtered by who may see them |
+| `/settings` | your account, the agent download, your paired PCs |
+| `/admin` | admins, every paired agent, and revoking any of them |
+| `/pair/{code}` | approve an agent that is asking to report as you |
+| `/api/agent/pair/*` | the agent's side of that: start, then poll |
 | `/api/state` | change fingerprint polled by open pages |
 | `/api/sync/push`, `/api/sync/pull`, `/api/sync/roster` | desktop sync; `X-Sync-Token` header |
 | `/healthz` | liveness |
@@ -334,14 +417,17 @@ ssh root@$PVE_HOST 'pct push 101 /tmp/modsuite.tar.gz /tmp/a.tar.gz &&
 ## Packaging the agent as an .exe
 
 ```bash
-python build_agent.py --server https://vrcmod.example.cc --token ROSTER_TOKEN
+python build_agent.py --server https://vrcmod.example.cc
 ```
 
-Produces `dist/VRChatRosterAgent.exe` (~15 MB) with the server URL and token
-compiled in. A moderator downloads one file, double-clicks it, and leaves it
-running while they are in the instance — no Python, no dependencies, nothing
-to configure. It writes `agent_config.json` next to itself so the settings
-survive restarts.
+Produces `dist/VRChatRosterAgent.exe` (~15 MB) with the server URL compiled in
+and **no credential at all** — it pairs on first run (above), so a leaked build
+is worth nothing. A moderator downloads one file, double-clicks it, opens the
+link it prints, and leaves it running while they are in the instance. It writes
+`agent_config.json` next to itself so the settings survive restarts.
+
+`--token ROSTER_TOKEN` still bakes one in for the old double-click-and-go
+behaviour, at the cost of shipping a shared secret inside a binary.
 
 Windows SmartScreen warns on first run because the binary is unsigned:
 *More info → Run anyway*.
@@ -359,6 +445,9 @@ in as public. That is why the server has two secrets:
 Build with `roster_token`. A leaked agent then costs you a bogus roster, not
 your moderation records. Verified: the roster token gets 200 on `/roster` and
 401 on both `/pull` and `/push`.
+
+Better still, bake in neither and let each PC pair itself — same scope, but the
+roster carries the moderator's name and either of you can revoke that one PC.
 
 ## Importing the Teen Chillout Firestore history
 
@@ -398,11 +487,17 @@ the group audit log and queues each action so its moderator is asked for a
 reason while they still remember it.
 
 ```json
-"audit_group": "grp_…",          // the group whose instances you moderate
+"audit_group": "grp_…",            // the group whose instances you moderate
 "audit_poll_seconds": 60,
-"discord_webhook_url": "…",      // where the finished log is announced
-"overaged_webhook_url": "…"      // second channel for age removals
+"discord_webhook_url": "…",        // where the finished log is announced
+"overaged_webhook_url": "…",       // second channel for age removals
+"discord_skip_actions": ["Warn"]   // logged, but not announced
 ```
+
+`discord_skip_actions` names actions the channel does not want — warns are
+routine enough to drown it. Only the announcement is skipped: the incident,
+the age check and the Kick Log page are unaffected, so nothing is lost, it
+just isn't broadcast.
 
 | Audit event | Becomes |
 |---|---|
@@ -429,6 +524,26 @@ outright rather than sitting there looking healthy.
 Only the first hour of history is queued on first run, so switching this on
 doesn't confront somebody with every kick the group ever had.
 
+**One kick, one log.** Two submits of the same prompt — a double click, or the
+banner in one tab and `/pending` in another — used to file two. The prompt is
+now claimed with a conditional `UPDATE` before anything is written, and the
+incident id is derived from VRChat's own audit id, so even a filing that beats
+the claim lands on the same record. The Kick Log form carries an id minted per
+render, which does the same for a double-clicked **Submit**; loading the page
+again gives a fresh one, so filing a genuinely similar log still works. The
+guard sits in the shared helper, so a repeat can't re-post to Discord or
+record a second age check either.
+
+**Other people's prompts.** The Pending page lists them so anyone can fill one
+in, which is useful and, on a busy night, noise. Two controls:
+
+- **Hide these** — a per-account choice, stored server-side so it follows you
+  from PC to phone. The nav badge then counts only yours.
+- **Ignore all N** — clears them, exactly as the per-item *not mine / ignore*
+  button already did, in one click. It ends the prompt for its owner too, so
+  it asks first; the kick stays in VRChat's audit log and can still be filed
+  by hand.
+
 ## Kick Log
 
 `/kick-log` files a kick, warn or ban by hand — the page the old tool had, for
@@ -441,8 +556,201 @@ age check if the reason mentions overage/underage, and the Discord embed —
 because both call the same helper.
 
 **Personal shortcuts.** Anyone can add reason chips to their own account; they
-appear on the Kick Log and the audit prompt, and nobody else sees them. Stored
-in `user_reasons`, keyed by VRChat user id.
+appear on the Kick Log and the audit prompt, and nobody else sees them. Managed
+on your settings page — they are an account setting, not part of filing a log —
+and stored in `user_reasons`, keyed by VRChat user id.
+
+## Your settings, and personal roster keys
+
+Clicking your own name in the top bar opens `/settings`: which staff group let
+you in, the roster agent to download, and the PCs reporting as you.
+
+**There is no allowlist.** Access is staff-group membership and nothing else —
+the page says so, because the tool this replaced (`team-chillo-mod-tool`)
+refused people with *"your VRChat account is not on the admin allowlist"* and
+that error still gets reported here. The `staff` table this tool imports is
+displayed, never enforced.
+
+**Getting the agent.** The page serves the packaged agent when the server has a
+build to hand out:
+
+```json
+"agent_exe": "/opt/modsuite/agent/VRChatRosterAgent.exe"
+```
+
+Empty falls back to `dist/VRChatRosterAgent.exe` next to the code, which is
+where `build_agent.py` leaves it. Absent, the page says so and shows the
+command to run it from a checkout instead of offering a link that 404s. The
+download needs a session — it is a build of our own client, pointed at this
+server, so there is no reason for it to be public.
+
+### Setting an agent up without handling a key
+
+A key that gets copy-pasted ends up in a Discord message. So the agent asks for
+one itself, and the moderator only ever handles a link:
+
+1. run the agent — it prints a link and a short code, and opens the link;
+2. the moderator opens it in a browser where they are already signed in;
+3. opening it *is* the approval. The key comes back down the agent's own
+   connection, and it starts reporting.
+
+Nothing has to be read off a screen, so nothing can be photographed, streamed
+or pasted into a channel by mistake.
+
+| Endpoint | Who | What |
+|---|---|---|
+| `POST /api/agent/pair/start` | the agent, no credential | returns `code`, `secret`, `url` |
+| `GET /pair/{code}` | a signed-in moderator | approves it, on the spot |
+| `POST /api/agent/pair/poll` | the agent, with `secret` | `pending`, then the key, once |
+
+The code is short and unambiguous (no I, O, 0 or 1 — it gets read aloud), lasts
+10 minutes, and is single-use. Seeing one is not enough to steal the key:
+collecting it needs the `secret` only the agent holds, and approving it needs a
+staff session. `pair/start` is rate limited per IP because it is necessarily
+unauthenticated.
+
+The approval page says who it just authorised and offers **Undo — I didn't
+start this**, which declines it and pulls the key back if it has already been
+collected. That is the answer to a link arriving from somebody else.
+
+### One key per PC
+
+| | `sync_token` | `roster_token` | a paired key |
+|---|---|---|---|
+| Read and write every record | yes | no | no |
+| Report an instance roster | yes | yes | yes |
+| Names who is reporting | no | no | **yes** |
+| Revocable per machine, in one click | no | no | **yes** |
+
+The agent otherwise reports its PC's hostname, and `DESKTOP-4F9K2` on the
+Screening page tells nobody who to ask about the roster. A paired key makes it
+read as the moderator who is actually in the instance.
+
+Desktop and laptop get a key each, listed on the settings page with when they
+last reported, so revoking one leaves the other running. Revoking takes effect
+on the agent's next heartbeat, about 30 seconds; that agent then prints what
+happened and how to pair again. Keys live in `agent_keys` in the clear —
+pairing means they normally never leave the two machines, and one grants
+strictly less than the session cookie already in that browser.
+
+**Setting one up by hand** is still there, folded away, for a PC you cannot
+open a browser on: mint a key, paste it in. That is the path pairing exists to
+avoid, so it is not the default.
+
+## Mod Log and the leaderboards
+
+`/mod-log` is every kick, warn and ban — when, who did it, who it was done to,
+and why — with a search, an action filter, and a click on any moderator's name
+to see only theirs.
+
+**Bans are narrower than the rest.** An admin sees all of them; everybody else
+sees only the ones they filed themselves. A ban is the heaviest thing this
+group does to somebody, and who has been banned is not general staff reading.
+The filter is applied where the rows are gathered, so it governs the counts and
+the leaderboards too — a moderator cannot be credited with bans they are not
+allowed to see, and the page says so rather than looking broken.
+
+**One board per kind of work**, not a combined total: Kicks, Warns, Bans, Age
+checks, each ranked on its own over the chosen period. Someone who works
+through a room of age checks all night and never kicks anybody is not behind
+the person who kicked four people, and a single total says they are.
+
+Incidents now record `reported_by_id` as well as the moderator's display name.
+"My own bans" has to keep meaning the same person after a rename, and a name is
+not an identity. Rows filed before this fall back to matching on the name they
+carry, so existing history still attributes correctly.
+
+## Admins
+
+A second, smaller list on top of being a moderator. Moderating needs nothing
+from it; it exists for the handful of things that should not be everybody's.
+
+| An admin can | Anybody else |
+|---|---|
+| Appoint and remove other admins | — |
+| Revoke **anybody's** roster agent | revoke their own |
+| Edit a kick, warn or ban log | — |
+| Delete an incident | mark it *dismissed* |
+
+Deleting used to be open to every moderator. It is an admin action now: a
+record of a real moderation action should not disappear because somebody
+mis-clicked, and *dismissed* already exists for "this one doesn't matter".
+
+**Editing is recorded, not hidden.** A correction rewrites the action, reason
+and players, and appends to the log's own transcript what it said before and
+who changed it. The report text carries that with it, so a corrected log can
+never quietly disagree with a screenshot somebody already took.
+
+**Who can be appointed:** anyone who has signed in here at least once, picked
+from a dropdown. Signing in at all requires the staff group, so every candidate
+is already a moderator; and the tool having seen the account is what proves the
+id is real. The list comes from `known_users`, which is written on every
+sign-in and — unlike `web_sessions` — never purged.
+
+**Root admins** come from the config and cannot be removed in the UI:
+
+```json
+"root_admins": ["usr_…"]
+```
+
+That is the backstop against the last admin removing themselves and locking
+the tool's administration out of its own settings.
+
+## Bans and invites, done with somebody's permissions
+
+The server has no VRChat account. Everything it does *inside* VRChat is done
+through a moderator who is signed in here — the same borrowing the audit-log
+watcher already relies on.
+
+That makes timing the problem. An overage kick at 3am should be followed by a
+ban, but the ban needs someone holding `group-bans-manage` with a live session.
+So actions queue in `group_actions` and a worker drains them whenever such a
+session exists. The moment a moderator with the permission signs in, the
+backlog goes out.
+
+```json
+"action_group": "grp_…",           // empty falls back to roster_group
+"auto_ban_overage": true,          // ban the target of an overage kick
+"hold_bans": true,                 // …but record them instead of sending
+"auto_invite_verified": true       // invite anyone verified in range
+```
+
+`hold_bans` is the dry run. Bans queue exactly as they would, and the Admin
+page shows every one — who, why, and which kick it came from — but nothing
+reaches VRChat. It is how you read what the rule *would* do to real people
+before letting it. Held rows are left completely untouched: no attempt
+counted, no error written, so clearing the flag finds the backlog as it was
+and sends the lot. Read it before releasing, and cancel anything that should
+not happen.
+
+| | Needs | When it fires |
+|---|---|---|
+| Ban | `group-bans-manage` | an overage kick, or an admin pressing **Ban** on a player page |
+| Invite | `group-invites-manage` | an in-range verdict, if they aren't in the group already |
+
+Both default to **off**. They act on a real person from an automated rule, so a
+deployment has to ask for them rather than inherit them.
+
+**Nothing is dropped and nothing expires.** A VRChat error reschedules the row
+15 minutes later and keeps the message; *nobody with the permission is signed
+in* reschedules immediately, because the thing being waited for is somebody
+arriving. A 403 means that particular moderator lacks the permission, so the
+next one is tried and that session isn't asked again. The Admin page lists the
+queue — waiting, done, and whose permissions carried each one out — and can
+cancel a row.
+
+Membership is checked when an invite is *sent*, not when it is queued: between
+a verdict and a moderator being available the person may well have joined on
+their own, and inviting an existing member is noise for them.
+
+**Banning by hand** is admin-only, on the player page. It files a Ban log —
+same incident, same Discord embed as any other — and queues the ban itself.
+
+One honest limit: "a moderator is signed in" means their VRChat session is live
+*in this process*. Sessions survive a restart, but the API client behind one is
+rebuilt on that moderator's next request, so after a restart the queue waits
+until somebody actually uses the panel. In practice that is minutes, and the
+queue is patient.
 
 ## Audit access is per-account
 
@@ -455,3 +763,60 @@ So the feature switches on whenever someone holding `group-audit-view` signs in
 — usually senior staff — and everyone else benefits without needing the
 permission themselves. When nobody eligible is signed in, `/pending` says so
 and points at the Kick Log instead.
+
+## Player pages
+
+Clicking a name on Screening, an age-check row or an incident roster opens
+`/player/{usr_id}` — everything known about one person in one place.
+
+**From VRChat** (`GET /profile/{userId}`, read with your own session): bio,
+**pronouns**, profile icon, trust rank derived from `trustTags`, languages,
+represented group, bio links, and VRChat's own `ageVerified` /
+`ageVerificationStatus`.
+
+That last one is shown *separately* from this tool's age checks and never
+merged with them: VRChat verifying an adult is a different claim from a
+moderator judging someone in-range for a teen group, and collapsing the two
+would lose the distinction that matters.
+
+**From this database**: every incident naming them, every age check with who
+recorded it, your cached VRChat note, their groups, and their Mod/HR rank if
+they're on the allowlist. You can record a verdict without leaving the page.
+
+Two deliberate details:
+
+- **Name-only matches are listed apart.** Records imported from before user ids
+  were captured can only be matched on display name, which is not proof of
+  identity — VRChat display names are changeable and reusable, so those appear
+  under "possible matches" rather than as fact.
+- **The page never depends on VRChat being up.** If the API is slow, the
+  session is stale, or the id is malformed, the profile section says so and the
+  history — the part that matters — still renders.
+
+Bio links are shown as their full URL and carry `rel="noopener noreferrer
+nofollow"`: they are attacker-controlled strings, so a moderator should see
+where one goes before deciding to follow it.
+
+## The moderator guide, and demo mode
+
+`docs/moderator-guide/` is the how-to for the people who use this rather than
+run it: one page per screen, in the order a shift actually touches them, with a
+screenshot of each.
+
+Every screenshot comes from **demo mode**, so the guide contains no real
+moderator, player or incident and can be handed to somebody who is not staff
+yet:
+
+```bash
+python tools/demo_server.py          # http://127.0.0.1:8788
+python tools/capture_guide_shots.py  # rewrites docs/moderator-guide/screenshots
+```
+
+`demo_server.py` serves the whole panel against a throwaway database in the
+temp directory, with the sign-in bypassed — it mints a session at startup and
+hands it to any browser that connects, as an admin — and a stub in place of
+VRChat, so it needs no credentials and makes no API calls. It binds 127.0.0.1,
+refuses to open the real `modtool.db`, and is not something to host.
+
+Changing what appears in the screenshots means editing the seed data at the top
+of `tools/demo_server.py` and rerunning both.

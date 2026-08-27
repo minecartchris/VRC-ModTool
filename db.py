@@ -143,7 +143,10 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     reason      TEXT,
     resolved_at REAL,
     incident_id TEXT,
-    dismissed   INTEGER DEFAULT 0
+    dismissed   INTEGER DEFAULT 0,
+    -- Nobody answered in time. Kept apart from `dismissed` so the page can
+    -- tell "a moderator waved this away" from "this timed out".
+    expired_at  REAL
 );
 CREATE INDEX IF NOT EXISTS ix_pending_actor ON pending_actions(actor_id);
 
@@ -155,6 +158,142 @@ CREATE TABLE IF NOT EXISTS user_reasons (
     reason     TEXT,
     created_at REAL,
     PRIMARY KEY (user_id, reason)
+);
+
+-- One row per paired agent, not per moderator: somebody running it on a
+-- desktop and a laptop gets two, so either can be revoked without stopping the
+-- other. The key is accepted on /api/sync/roster and nothing else, so one that
+-- leaks costs a bogus roster rather than the records.
+--
+-- Kept in the clear rather than hashed. Pairing means it normally never leaves
+-- the two machines, but a moderator setting one up by hand has to be able to
+-- read it back, and it grants strictly less than the session cookie already
+-- sitting in their browser.
+CREATE TABLE IF NOT EXISTS agent_keys (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT,
+    user_name  TEXT,
+    label      TEXT,        -- the PC it was paired from
+    roster_key TEXT UNIQUE,
+    created_at REAL,
+    last_used  REAL
+);
+CREATE INDEX IF NOT EXISTS ix_agent_keys_user ON agent_keys(user_id);
+
+-- Everyone who has ever signed in. web_sessions is not this list: expired rows
+-- are purged, and appointing an admin should not depend on whether they
+-- happen to have a session open right now.
+CREATE TABLE IF NOT EXISTS known_users (
+    user_id    TEXT PRIMARY KEY,
+    name       TEXT,
+    first_seen REAL,
+    last_seen  REAL
+);
+
+-- Who can administer this tool: appoint other admins, revoke anybody's agent,
+-- and edit or delete a kick/warn/ban log. Being a moderator is still just
+-- staff-group membership; this is a second, smaller list on top of it.
+--
+-- The root admins in web_config.json are always in, whatever this table says,
+-- so the last admin cannot lock everybody out by removing themselves.
+CREATE TABLE IF NOT EXISTS admins (
+    user_id  TEXT PRIMARY KEY,
+    name     TEXT,
+    added_by TEXT,
+    added_at REAL
+);
+
+-- People an admin has let into the tool by hand, by VRChat id.
+--
+-- Separate from `admins` on purpose: this grants a way in and nothing else.
+-- It is for the moderator who is not in the staff group yet, or never will be
+-- — a trial mod, somebody helping for one event — and making them an admin to
+-- get them through the door would hand them the whole Admin page with it.
+CREATE TABLE IF NOT EXISTS allowed_users (
+    user_id  TEXT PRIMARY KEY,
+    name     TEXT,
+    note     TEXT,
+    added_by TEXT,
+    added_at REAL
+);
+
+-- A roster agent waiting to be let in. The agent starts one on first launch,
+-- shows a short code and a link, and polls; a signed-in moderator opens the
+-- link and approves, which is what hands over their key.
+--
+-- The point is that the key is never on screen, in a chat message or in a
+-- screenshot — the human only ever handles the code, which is useless on its
+-- own: approving it needs a staff session, and collecting the key needs the
+-- secret that only the agent holds. Rows are short-lived and single-use.
+CREATE TABLE IF NOT EXISTS agent_pairings (
+    code        TEXT PRIMARY KEY,   -- short and human-readable, e.g. K7QP-4M2X
+    secret_hash TEXT,               -- sha256 of the agent's poll secret
+    client_name TEXT,               -- hostname, so the page names the PC
+    created_at  REAL,
+    expires_at  REAL,
+    user_id     TEXT,               -- who approved it
+    user_name   TEXT,
+    approved_at REAL,
+    denied_at   REAL,
+    claimed_at  REAL                -- when the agent collected the key
+);
+
+-- Group actions waiting on somebody's VRChat permissions: a ban to place, an
+-- invite to send. The server holds no VRChat account of its own — it borrows a
+-- signed-in moderator's live session — so an action raised at 4am, when nobody
+-- with the permission is online, waits here instead of being lost.
+--
+-- Nothing is ever dropped: a failure reschedules rather than gives up, and the
+-- row records who asked for it and why, so a ban can always be traced back to
+-- the check that caused it.
+CREATE TABLE IF NOT EXISTS group_actions (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT,        -- ban | invite
+    group_id    TEXT,
+    user_id     TEXT,
+    user_name   TEXT,
+    reason      TEXT,
+    incident_id TEXT,
+    asked_by    TEXT,        -- display name, for the audit trail
+    asked_by_id TEXT,
+    created_at  REAL,
+    next_try_at REAL,        -- earliest retry; 0 means "as soon as possible"
+    attempts    INTEGER DEFAULT 0,
+    last_error  TEXT,
+    done_at     REAL,
+    done_by     TEXT,        -- whose permissions finally carried it out
+    cancelled_at REAL
+);
+CREATE INDEX IF NOT EXISTS ix_group_actions_open
+    ON group_actions(done_at, cancelled_at, next_try_at);
+
+-- Per-account UI choices, e.g. whether the Pending page shows other people's
+-- kicks. Server-side rather than in the browser so the choice follows the
+-- moderator between their PC and their phone.
+CREATE TABLE IF NOT EXISTS user_prefs (
+    user_id TEXT,
+    name    TEXT,
+    value   TEXT,
+    PRIMARY KEY (user_id, name)
+);
+
+-- What VRChat says is in an instance, cached briefly. The agents report who
+-- is in a room; this is the only independent check on whether they are in the
+-- room they think they are. Short-lived on purpose: a headcount minutes old
+-- would start failing agents for being right.
+CREATE TABLE IF NOT EXISTS instance_counts (
+    location   TEXT PRIMARY KEY,    -- world_id:instance_id
+    n_users    INTEGER,
+    capacity   INTEGER,
+    checked_at REAL,
+    error      TEXT
+);
+
+-- Small odds and ends the server has to remember between restarts, such as
+-- how far back through VRChat's audit log it has already read.
+CREATE TABLE IF NOT EXISTS tool_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
 );
 
 -- Sync cursors, one row per peer ("server" on a desktop client).
@@ -172,20 +311,32 @@ _ADDED_COLUMNS = {
         "updated_at": "REAL",
         "deleted": "INTEGER DEFAULT 0",
         "reported_by": "TEXT",
+        # Who filed it, by VRChat id rather than display name. Names change,
+        # and "show me my own bans" has to keep meaning the same person.
+        # Empty on rows filed before this existed; those fall back to the name.
+        "reported_by_id": "TEXT",
         "origin": "TEXT",
     },
     "web_sessions": {
         "vrc_cookie": "TEXT",
     },
+    "pending_actions": {
+        # Prompts that timed out. Added after the first release, so an old
+        # database gets the column rather than a rebuild.
+        "expired_at": "REAL",
+    },
     "rosters": {
         "seen_at": "REAL",
+        # Whose agent this is, when it reported with a paired key. Empty for
+        # the shared roster_token and for the server's own log reader.
+        "user_id": "TEXT",
     },
 }
 
 _INCIDENT_FIELDS = (
     "created_at", "trigger", "transcript", "world_name", "world_id",
     "instance_id", "players", "clip_path", "screenshot_path", "notes",
-    "status", "reported_by", "origin", "deleted",
+    "status", "reported_by", "reported_by_id", "origin", "deleted",
 )
 _AGE_CHECK_FIELDS = (
     "user_id", "name", "verdict", "reported_age", "world_name", "world_id",
@@ -214,6 +365,7 @@ class Database:
             self.conn.commit()
         self._migrate_columns()
         self._migrate_json()
+        self._seed_known_users()
 
     def close(self) -> None:
         with self._lock:
@@ -302,6 +454,7 @@ class Database:
             "notes": inc.get("notes", "") or "",
             "status": inc.get("status", "new") or "new",
             "reported_by": inc.get("reported_by", "") or "",
+            "reported_by_id": inc.get("reported_by_id", "") or "",
             "origin": inc.get("origin", "") or "",
             "deleted": int(inc.get("deleted", 0) or 0),
         }
@@ -319,6 +472,7 @@ class Database:
             "screenshot_path": r["screenshot_path"] or "",
             "notes": r["notes"] or "", "status": r["status"] or "new",
             "reported_by": r["reported_by"] or "",
+            "reported_by_id": r["reported_by_id"] or "",
             "origin": r["origin"] or "",
             "updated_at": r["updated_at"] or 0.0,
             "deleted": bool(r["deleted"]),
@@ -429,7 +583,7 @@ class Database:
 
     # ---------------- rosters ----------------
     def upsert_roster(self, client_id: str, snap: dict,
-                      client_name: str = "") -> bool:
+                      client_name: str = "", user_id: str = "") -> bool:
         """Record a heartbeat from a reporter. True if the roster changed.
 
         Reporters heartbeat every ~30s to prove they are alive, so bumping
@@ -453,17 +607,19 @@ class Database:
         self._exec(
             """INSERT INTO rosters
                (client_id, client_name, world_name, world_id, instance_id,
-                players, updated_at, seen_at)
-               VALUES (?,?,?,?,?,?,?,?)
+                players, updated_at, seen_at, user_id)
+               VALUES (?,?,?,?,?,?,?,?,?)
                ON CONFLICT(client_id) DO UPDATE SET
                  client_name=excluded.client_name,
                  world_name=excluded.world_name, world_id=excluded.world_id,
                  instance_id=excluded.instance_id, players=excluded.players,
                  updated_at=CASE WHEN ? THEN excluded.updated_at
                                  ELSE rosters.updated_at END,
-                 seen_at=excluded.seen_at""",
+                 seen_at=excluded.seen_at,
+                 user_id=CASE WHEN excluded.user_id <> '' THEN excluded.user_id
+                              ELSE rosters.user_id END""",
             (client_id, client_name, world_name, world_id, instance_id,
-             players, now, now, 1 if changed else 0))
+             players, now, now, user_id or "", 1 if changed else 0))
         return changed
 
     def all_rosters(self) -> list[dict]:
@@ -477,6 +633,7 @@ class Database:
             "instance_id": r["instance_id"] or "",
             "players": json.loads(r["players"] or "[]"),
             "updated_at": r["updated_at"] or 0.0,
+            "user_id": r["user_id"] or "",
             "seen_at": r["seen_at"] or r["updated_at"] or 0.0} for r in rows]
 
     # ---------------- web sessions ----------------
@@ -534,12 +691,22 @@ class Database:
              time.time()))
         return True
 
-    def pending_actions(self, actor_id: str = "", include_done: bool = False
-                        ) -> list[dict]:
+    def pending_actions(self, actor_id: str = "", include_done: bool = False,
+                        expire_after: float = 0.0) -> list[dict]:
+        """Prompts awaiting a reason.
+
+        `expire_after` seconds gives up on the ones nobody answered, on the
+        way past. Expiring on read rather than on a timer means the list is
+        never showing something it is about to drop, and there is one place
+        it happens instead of one per caller.
+        """
+        if expire_after > 0:
+            self.expire_pending_actions(expire_after)
         sql = "SELECT * FROM pending_actions WHERE 1=1"
         params: list = []
         if not include_done:
-            sql += " AND resolved_at IS NULL AND COALESCE(dismissed, 0) = 0"
+            sql += (" AND resolved_at IS NULL AND COALESCE(dismissed, 0) = 0"
+                    " AND expired_at IS NULL")
         if actor_id:
             sql += " AND actor_id = ?"
             params.append(actor_id)
@@ -550,11 +717,54 @@ class Database:
         r = self._one("SELECT * FROM pending_actions WHERE id=?", (action_id,))
         return dict(r) if r else None
 
+    def claim_pending_action(self, action_id: str) -> bool:
+        """Take ownership of an unresolved action. True only for the winner.
+
+        Checking `resolved_at` and then writing it leaves a window between the
+        two, and a double-clicked form fits inside it easily — both requests
+        read "unresolved", both file a log, and one kick becomes two. The
+        conditional UPDATE decides it in the database instead.
+        """
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE pending_actions SET resolved_at=? "
+                "WHERE id=? AND resolved_at IS NULL", (time.time(), action_id))
+            self.conn.commit()
+            return cur.rowcount == 1
+
     def resolve_pending_action(self, action_id: str, reason: str,
                                incident_id: str) -> None:
         self._exec(
             "UPDATE pending_actions SET reason=?, incident_id=?, resolved_at=? "
             "WHERE id=?", (reason, incident_id, time.time(), action_id))
+
+    def expired_pending_actions(self, limit: int = 10) -> list[dict]:
+        """The ones that timed out, most recently first.
+
+        Its own query because the general list is ordered by when the kick
+        happened, and expired prompts are by definition the old end of it —
+        they would never appear in a page of the newest rows.
+        """
+        return [dict(r) for r in self._query(
+            "SELECT * FROM pending_actions WHERE expired_at IS NOT NULL "
+            "ORDER BY expired_at DESC, created_at DESC LIMIT ?", (limit,))]
+
+    def expire_pending_actions(self, older_than: float) -> int:
+        """Give up on prompts older than this. Returns how many were dropped.
+
+        A kick from yesterday is not going to get a reason today — the
+        moderator has long since forgotten which of four people it was. The
+        row stays for the record; it just stops asking.
+        """
+        now = time.time()
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE pending_actions SET expired_at=? WHERE "
+                "resolved_at IS NULL AND COALESCE(dismissed, 0) = 0 "
+                "AND expired_at IS NULL AND created_at < ?",
+                (now, now - older_than))
+            self.conn.commit()
+            return cur.rowcount
 
     def dismiss_pending_action(self, action_id: str) -> None:
         self._exec("UPDATE pending_actions SET dismissed=1 WHERE id=?",
@@ -564,6 +774,83 @@ class Database:
         r = self._one("SELECT MAX(created_at) AS t FROM pending_actions "
                       "WHERE group_id=?", (group_id,))
         return (r["t"] if r and r["t"] else 0.0)
+
+    # ---------------- what VRChat says is in a room ----------------
+    def note_instance_count(self, location: str, n_users: int,
+                            capacity: int = 0, error: str = "") -> None:
+        self._exec(
+            "INSERT INTO instance_counts (location, n_users, capacity, "
+            "checked_at, error) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(location) DO UPDATE SET n_users=excluded.n_users, "
+            "capacity=excluded.capacity, checked_at=excluded.checked_at, "
+            "error=excluded.error",
+            (location, int(n_users), int(capacity), time.time(), error))
+
+    def instance_counts(self, max_age: float = 120.0) -> dict:
+        """Fresh headcounts by location. Stale rows are left out rather than
+        returned old: a wrong number here gets an agent wrongly ignored."""
+        rows = self._query("SELECT * FROM instance_counts WHERE checked_at > ?",
+                           (time.time() - max_age,))
+        return {r["location"]: dict(r) for r in rows if not r["error"]}
+
+    def instance_count_ages(self) -> dict:
+        """Every cached row including stale and failed ones, for the page to
+        say why it has no number rather than saying nothing."""
+        return {r["location"]: dict(r)
+                for r in self._query("SELECT * FROM instance_counts")}
+
+    # ---------------- odds and ends the server remembers ----------------
+    def get_state(self, key: str, default: str = "") -> str:
+        r = self._one("SELECT value FROM tool_state WHERE key=?", (key,))
+        return (r["value"] if r and r["value"] is not None else default)
+
+    def set_state(self, key: str, value: str) -> None:
+        self._exec("INSERT INTO tool_state (key, value) VALUES (?,?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   (key, str(value)))
+
+    # ---------------- one player's whole record ----------------
+    def history_for_user(self, user_id: str, name: str = "") -> dict:
+        """Everything this tool holds on one player.
+
+        Incidents keep their roster as a JSON blob, so the LIKE is only a cheap
+        prefilter — membership is confirmed in Python, otherwise a user id that
+        appears in some other field would produce false hits.
+        """
+        incidents = []
+        if user_id:
+            rows = self._query(
+                "SELECT * FROM incidents WHERE players LIKE ? "
+                "AND COALESCE(deleted, 0) = 0 ORDER BY created_at DESC",
+                (f"%{user_id}%",))
+            for r in rows:
+                inc = self._row_to_incident(r)
+                if any(p.get("user_id") == user_id for p in inc["players"]):
+                    incidents.append(inc)
+
+        # Players who were logged before ids were captured only have a name.
+        by_name = []
+        if name:
+            rows = self._query(
+                "SELECT * FROM incidents WHERE players LIKE ? "
+                "AND COALESCE(deleted, 0) = 0 ORDER BY created_at DESC",
+                (f"%{name}%",))
+            seen = {i["id"] for i in incidents}
+            for r in rows:
+                inc = self._row_to_incident(r)
+                if inc["id"] in seen:
+                    continue
+                if any(not p.get("user_id") and p.get("name") == name
+                       for p in inc["players"]):
+                    by_name.append(inc)
+
+        return {
+            "incidents": incidents,
+            "incidents_by_name": by_name,
+            "age_checks": self.age_checks_for_user(user_id) if user_id else [],
+            "actions": [a for a in self.pending_actions(include_done=True)
+                        if a["target_id"] == user_id] if user_id else [],
+        }
 
     # ---------------- personal reason shortcuts ----------------
     def user_reasons(self, user_id: str) -> list[str]:
@@ -584,6 +871,262 @@ class Database:
     def remove_user_reason(self, user_id: str, reason: str) -> None:
         self._exec("DELETE FROM user_reasons WHERE user_id=? AND reason=?",
                    (user_id, reason))
+
+    # ---------------- agent keys ----------------
+    def add_agent_key(self, user_id: str, user_name: str, label: str,
+                      key: str) -> dict:
+        row = {"id": new_id(), "user_id": user_id, "user_name": user_name or "",
+               "label": (label or "").strip()[:60] or "an unnamed PC",
+               "roster_key": key, "created_at": time.time(), "last_used": 0.0}
+        self._exec(
+            "INSERT INTO agent_keys (id, user_id, user_name, label, "
+            "roster_key, created_at, last_used) VALUES (?,?,?,?,?,?,?)",
+            tuple(row[c] for c in ("id", "user_id", "user_name", "label",
+                                   "roster_key", "created_at", "last_used")))
+        return row
+
+    def agent_keys(self, user_id: str = "") -> list[dict]:
+        """One moderator's paired agents, or everybody's when user_id is ''."""
+        if user_id:
+            rows = self._query(
+                "SELECT * FROM agent_keys WHERE user_id=? ORDER BY created_at",
+                (user_id,))
+        else:
+            rows = self._query("SELECT * FROM agent_keys "
+                               "ORDER BY user_name, created_at")
+        return [dict(r) for r in rows]
+
+    def agent_key(self, key_id: str) -> dict | None:
+        row = self._one("SELECT * FROM agent_keys WHERE id=?", (key_id,))
+        return dict(row) if row else None
+
+    def agent_key_by_secret(self, key: str) -> dict | None:
+        if not key:
+            return None
+        row = self._one("SELECT * FROM agent_keys WHERE roster_key=?", (key,))
+        return dict(row) if row else None
+
+    def revoke_agent_key(self, key_id: str) -> dict | None:
+        """Delete a key. Returns the row that went, for the message."""
+        row = self.agent_key(key_id)
+        if row:
+            self._exec("DELETE FROM agent_keys WHERE id=?", (key_id,))
+        return row
+
+    def touch_agent_key(self, key: str) -> None:
+        """Record that a key just reported, so its owner can see it working."""
+        self._exec("UPDATE agent_keys SET last_used=? WHERE roster_key=?",
+                   (time.time(), key))
+
+    # ---------------- queued group actions ----------------
+    def queue_group_action(self, kind: str, *, group_id: str, user_id: str,
+                           user_name: str = "", reason: str = "",
+                           incident_id: str = "", asked_by: str = "",
+                           asked_by_id: str = "") -> dict | None:
+        """Queue a ban or invite. Returns the row, or None if already queued.
+
+        One open action per person per kind: an overage kick that lands twice,
+        or a moderator clicking Ban again while the first is still waiting for
+        somebody with the permission, must not queue two.
+        """
+        if not user_id:
+            return None
+        existing = self._one(
+            "SELECT * FROM group_actions WHERE kind=? AND user_id=? "
+            "AND group_id=? AND done_at IS NULL AND cancelled_at IS NULL",
+            (kind, user_id, group_id))
+        if existing:
+            return None
+        row = {"id": new_id(), "kind": kind, "group_id": group_id,
+               "user_id": user_id, "user_name": user_name or "",
+               "reason": reason or "", "incident_id": incident_id or "",
+               "asked_by": asked_by or "", "asked_by_id": asked_by_id or "",
+               "created_at": time.time(), "next_try_at": 0.0, "attempts": 0,
+               "last_error": ""}
+        cols = ", ".join(row)
+        self._exec(f"INSERT INTO group_actions ({cols}) "
+                   f"VALUES ({', '.join('?' for _ in row)})",
+                   tuple(row.values()))
+        return row
+
+    def due_group_actions(self, limit: int = 20,
+                          kinds: tuple | list | None = None) -> list[dict]:
+        """Actions ready to be attempted, oldest first.
+
+        `kinds` exists so a held kind can be left out of the query entirely.
+        Fetching them and skipping them later is not the same thing: they are
+        the oldest rows in the table, so they fill the page and the work that
+        could actually be sent never appears in it.
+        """
+        sql = ("SELECT * FROM group_actions WHERE done_at IS NULL "
+               "AND cancelled_at IS NULL AND next_try_at <= ?")
+        params: list = [time.time()]
+        if kinds is not None:
+            if not kinds:
+                return []
+            sql += " AND kind IN (%s)" % ",".join("?" * len(kinds))
+            params.extend(kinds)
+        sql += " ORDER BY created_at LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self._query(sql, tuple(params))]
+
+    def count_group_actions(self) -> dict:
+        """How many actions are still waiting, per kind."""
+        rows = self._query(
+            "SELECT kind, COUNT(*) AS n FROM group_actions "
+            "WHERE done_at IS NULL AND cancelled_at IS NULL GROUP BY kind")
+        return {r["kind"]: r["n"] for r in rows}
+
+    def group_actions(self, *, open_only: bool = False,
+                      limit: int = 100) -> list[dict]:
+        where = ("WHERE done_at IS NULL AND cancelled_at IS NULL"
+                 if open_only else "")
+        rows = self._query(
+            f"SELECT * FROM group_actions {where} "
+            "ORDER BY done_at IS NULL DESC, created_at DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
+
+    def finish_group_action(self, action_id: str, done_by: str) -> None:
+        self._exec("UPDATE group_actions SET done_at=?, done_by=?, "
+                   "last_error='' WHERE id=?",
+                   (time.time(), done_by or "", action_id))
+
+    def defer_group_action(self, action_id: str, error: str | None,
+                           retry_in: float) -> None:
+        """Record a failure and try again later. Never gives up.
+
+        `error=None` keeps whatever was already there. "Nobody could try this"
+        is not news, and writing it over VRChat's own answer loses the only
+        line that says *why* — a row retried every twenty seconds overwrites
+        the real refusal within one pass of earning it, and then the queue
+        looks stuck for no stated reason.
+        """
+        if error is None:
+            self._exec(
+                "UPDATE group_actions SET attempts=attempts+1, next_try_at=? "
+                "WHERE id=?", (time.time() + retry_in, action_id))
+            return
+        self._exec(
+            "UPDATE group_actions SET attempts=attempts+1, last_error=?, "
+            "next_try_at=? WHERE id=?",
+            (str(error)[:200], time.time() + retry_in, action_id))
+
+    def cancel_group_action(self, action_id: str) -> None:
+        self._exec("UPDATE group_actions SET cancelled_at=? WHERE id=?",
+                   (time.time(), action_id))
+
+    # ---------------- per-account preferences ----------------
+    def pref(self, user_id: str, name: str, default: str = "") -> str:
+        row = self._one(
+            "SELECT value FROM user_prefs WHERE user_id=? AND name=?",
+            (user_id, name))
+        return row["value"] if row else default
+
+    def set_pref(self, user_id: str, name: str, value: str) -> None:
+        self._exec(
+            "INSERT INTO user_prefs (user_id, name, value) VALUES (?,?,?) "
+            "ON CONFLICT(user_id, name) DO UPDATE SET value=excluded.value",
+            (user_id, name, value))
+
+    # ---------------- who has signed in ----------------
+    def note_known_user(self, user_id: str, name: str) -> None:
+        now = time.time()
+        self._exec(
+            "INSERT INTO known_users (user_id, name, first_seen, last_seen) "
+            "VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "name=excluded.name, last_seen=excluded.last_seen",
+            (user_id, name or "", now, now))
+
+    def known_users(self) -> list[dict]:
+        return [dict(r) for r in
+                self._query("SELECT * FROM known_users ORDER BY name")]
+
+    # ---------------- admins ----------------
+    def all_admins(self) -> list[dict]:
+        return [dict(r) for r in
+                self._query("SELECT * FROM admins ORDER BY added_at")]
+
+    def is_admin(self, user_id: str) -> bool:
+        return bool(user_id) and bool(
+            self._one("SELECT 1 FROM admins WHERE user_id=?", (user_id,)))
+
+    def add_admin(self, user_id: str, name: str, added_by: str) -> None:
+        self._exec(
+            "INSERT INTO admins (user_id, name, added_by, added_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "name=excluded.name",
+            (user_id, name or "", added_by, time.time()))
+
+    def remove_admin(self, user_id: str) -> None:
+        self._exec("DELETE FROM admins WHERE user_id=?", (user_id,))
+
+    # ---------------- let in by hand ----------------
+    def allow_user(self, user_id: str, name: str = "", note: str = "",
+                   added_by: str = "") -> None:
+        """Let this VRChat id sign in. Re-adding refreshes the name and note
+        rather than making a second row."""
+        self._exec(
+            "INSERT INTO allowed_users (user_id, name, note, added_by, added_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "name=excluded.name, note=excluded.note",
+            (user_id, name or "", note or "", added_by or "", time.time()))
+
+    def remove_allowed_user(self, user_id: str) -> None:
+        self._exec("DELETE FROM allowed_users WHERE user_id=?", (user_id,))
+
+    def allowed_users(self) -> list[dict]:
+        return [dict(r) for r in self._query(
+            "SELECT * FROM allowed_users ORDER BY added_at DESC")]
+
+    def is_allowed(self, user_id: str) -> bool:
+        return bool(user_id) and bool(self._one(
+            "SELECT 1 FROM allowed_users WHERE user_id=?", (user_id,)))
+
+    # ---------------- agent pairing ----------------
+    def create_pairing(self, code: str, secret_hash: str, client_name: str,
+                       ttl: float) -> None:
+        now = time.time()
+        self.purge_expired_pairings()
+        self._exec(
+            "INSERT OR REPLACE INTO agent_pairings "
+            "(code, secret_hash, client_name, created_at, expires_at) "
+            "VALUES (?,?,?,?,?)",
+            (code, secret_hash, (client_name or "")[:60], now, now + ttl))
+
+    def get_pairing(self, code: str) -> dict | None:
+        row = self._one("SELECT * FROM agent_pairings WHERE code=?", (code,))
+        return dict(row) if row else None
+
+    def settle_pairing(self, code: str, *, user_id: str = "",
+                       user_name: str = "", denied: bool = False) -> None:
+        """Record a moderator's decision on a pending pairing."""
+        now = time.time()
+        if denied:
+            self._exec("UPDATE agent_pairings SET denied_at=? WHERE code=?",
+                       (now, code))
+            return
+        self._exec(
+            "UPDATE agent_pairings SET user_id=?, user_name=?, approved_at=? "
+            "WHERE code=?", (user_id, user_name, now, code))
+
+    def claim_pairing(self, code: str) -> None:
+        """Mark the key as collected, so the code cannot be replayed."""
+        self._exec("UPDATE agent_pairings SET claimed_at=? WHERE code=?",
+                   (time.time(), code))
+
+    def pending_pairings(self, user_id: str = "") -> list[dict]:
+        rows = self._query(
+            "SELECT * FROM agent_pairings WHERE expires_at > ? "
+            "AND approved_at IS NULL AND denied_at IS NULL "
+            "ORDER BY created_at DESC", (time.time(),))
+        return [dict(r) for r in rows]
+
+    def purge_expired_pairings(self) -> None:
+        # An hour past expiry, so a claimed row sticks around long enough for
+        # a retrying agent to be told "already used" rather than "never heard
+        # of it", which is a much more confusing thing to debug.
+        self._exec("DELETE FROM agent_pairings WHERE expires_at < ?",
+                   (time.time() - 3600,))
 
     # ---------------- staff roster ----------------
     def all_staff(self) -> dict:
@@ -610,21 +1153,50 @@ class Database:
         return True
 
     # ---------------- change detection ----------------
-    def state_version(self) -> str:
+    def state_version(self, scope: str = "") -> str:
         """Cheap fingerprint of everything the web pages display.
 
         Polled by the browser every few seconds, so it must stay a handful of
         indexed MAX/COUNT lookups rather than reading any rows. Counts are in
         it too, so a hard delete changes the fingerprint even though it lowers
         no timestamp.
+
+        `scope` narrows the roster part to one instance — `world_id:instance_id`,
+        or `client:<id>` for a reporter that named no world. Without it, two
+        moderators agenting different instances would reload each other's
+        Screening page on every join and leave in a world they cannot see.
+        Every agent in one room shares a scope, so a second agent joining your
+        instance keeps refreshing your page, as it should.
         """
-        r = self._one("""
-            SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
-                   (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
-                   (SELECT COALESCE(MAX(updated_at), 0) FROM rosters)    AS r,
-                   (SELECT COUNT(*) FROM incidents)                      AS ic,
-                   (SELECT COUNT(*) FROM age_checks)                     AS ac""")
-        return (f"{r['i']:.3f}-{r['a']:.3f}-{r['r']:.3f}-{r['ic']}-{r['ac']}")
+        if scope.startswith("client:"):
+            r = self._one("""
+                SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM rosters
+                         WHERE client_id=?)                                  AS r,
+                       (SELECT COUNT(*) FROM incidents)                      AS ic,
+                       (SELECT COUNT(*) FROM age_checks)                     AS ac""",
+                          (scope[len("client:"):],))
+        elif scope:
+            # world ids carry no colon, so the first one splits it cleanly.
+            world, _, inst = scope.partition(":")
+            r = self._one("""
+                SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM rosters
+                         WHERE world_id=? AND instance_id=?)                 AS r,
+                       (SELECT COUNT(*) FROM incidents)                      AS ic,
+                       (SELECT COUNT(*) FROM age_checks)                     AS ac""",
+                          (world, inst))
+        else:
+            r = self._one("""
+                SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM incidents)  AS i,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM age_checks) AS a,
+                       (SELECT COALESCE(MAX(updated_at), 0) FROM rosters)    AS r,
+                       (SELECT COUNT(*) FROM incidents)                      AS ic,
+                       (SELECT COUNT(*) FROM age_checks)                     AS ac""")
+        return (f"{r['i']:.3f}-{r['a']:.3f}-{(r['r'] or 0):.3f}"
+                f"-{r['ic']}-{r['ac']}")
 
     # ---------------- sync cursors ----------------
     def sync_cursor(self, peer: str) -> dict:
@@ -661,6 +1233,19 @@ class Database:
         return False
 
     # ---------------- migrations ----------------
+    def _seed_known_users(self) -> None:
+        """Backfill from sessions, once, for a database that predates the list.
+
+        known_users is written on sign-in, so on an existing deployment it
+        would start empty and nobody could be appointed an admin until they
+        happened to sign in again. Sessions carry the same id and name.
+        OR IGNORE, so a real sign-in always wins.
+        """
+        self._exec(
+            "INSERT OR IGNORE INTO known_users (user_id, name, first_seen, "
+            "last_seen) SELECT user_id, name, created_at, created_at "
+            "FROM web_sessions WHERE user_id <> ''")
+
     def _migrate_columns(self) -> None:
         for table, cols in _ADDED_COLUMNS.items():
             have = {r["name"] for r in self._query(f"PRAGMA table_info({table})")}

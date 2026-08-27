@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Your settings — Mod Suite{% endblock %}
+{% block content %}
+<div>
+  <h1>Your settings</h1>
+  <p class="lead">Your account, and the roster agents reporting as you.</p>
+</div>
+
+<section class="card">
+  <h2>Account</h2>
+  <ul class="list">
+    <li>{{ icon("account", 18) }} <strong>{{ session.name }}</strong>
+      <span class="pill {{ 'pill-hr' if my_role == 'HR' else 'pill-mod' }}"
+            title="{{ 'Listed as ' ~ my_role ~ ' on the moderator allowlist. ' if my_role }}Access comes from your staff group">
+        {{ icon("shield", 13) }} {{ (my_role or "MOD")|upper }}</span>
+      {% if am_admin %}<span class="pill pill-hr">ADMIN</span>{% endif %}
+      <span class="uid" style="margin-left:auto">{{ session.user_id }}</span></li>
+    <li>{{ icon("group", 18) }} Signed in via
+      <strong>{{ session.groups|join(", ") }}</strong></li>
+  </ul>
+  <p class="dim" style="margin-top:12px">Access is decided by that group and
+    nothing else — there is no separate allowlist to be added to. Leave the
+    group in VRChat and this account stops working here at the next sign-in.</p>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Roster agent</h2>
+    <span class="dim">for the PC you play VRChat on</span>
+  </div>
+  <p class="dim">VRChat's API will say an instance holds 48 people but never who
+    they are — the names exist only in the log of a client that is in the world.
+    This server is not in the world, so Screening stays empty unless somebody
+    who is there runs the agent.</p>
+
+  <ol class="list" style="margin-top:16px">
+    <li><strong>1.</strong> Download it and run it on your gaming PC.</li>
+    <li><strong>2.</strong> It shows a link. Open that link in this browser.</li>
+    <li><strong>3.</strong> That's it — it starts reporting as you.</li>
+  </ol>
+  <p class="dim">Your key is handed over machine to machine when you open the
+    link, so it never appears on screen for somebody to photograph, and never
+    has to be pasted into a chat.</p>
+
+  {% if agent_exe %}
+  <p style="margin-top:16px">
+    <a class="btn-primary" href="/settings/agent"
+       style="display:inline-block; padding:8px 12px; border-radius:12px">
+      {{ icon("download", 16) }} Download VRChatRosterAgent.exe</a>
+  </p>
+  <p class="dim">Windows warns on first run because the build is unsigned —
+    <em>More info</em> then <em>Run anyway</em>.</p>
+  {% else %}
+  <p class="banner banner-warn" style="margin-top:16px">{{ icon("warning", 18) }}
+    <span>No build on this server yet. Run
+      <code>python build_agent.py --server {{ base_url }}</code> and point
+      <code>agent_exe</code> at the result, or run
+      <code>python agent.py --server {{ base_url }}</code> from a checkout —
+      it pairs the same way.</span></p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Your agents</h2>
+    <span class="dim">only you and admins see these</span>
+  </div>
+
+  {% if my_keys %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>PC</th><th>Paired</th><th>Last reported</th><th>Key</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for k in my_keys %}
+        <tr>
+          <td><strong>{{ k.label }}</strong></td>
+          <td class="nowrap dim">{{ fmt_ago(k.created_at) }}</td>
+          <td class="nowrap">
+            {% if k.last_used %}{{ fmt_ago(k.last_used) }}
+            {% else %}<span class="pill pill-mut">never</span>{% endif %}</td>
+          <td>
+            <input class="pkey" type="password" readonly value="{{ k.roster_key }}"
+                   style="width:150px; font-family: Consolas, ui-monospace, monospace">
+            <button type="button" class="btn-sm pkey-show">Show</button>
+          </td>
+          <td class="num">
+            <form method="post" action="/settings/key/{{ k.id }}/revoke"
+                  onsubmit="return confirm('Revoke the agent on {{ k.label }}? It stops reporting within 30 seconds.')">
+              <button class="btn-sm btn-danger" type="submit">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="dim" style="margin-top:12px">One key per PC, so revoking your laptop
+    leaves your desktop reporting. A key can report who is in an instance and
+    nothing else — it cannot read incidents or age checks.</p>
+  {% else %}
+  <p class="dim">None yet. Run the agent and open the link it gives you; it
+    appears here the moment it collects its key.</p>
+  {% endif %}
+
+  <details style="margin-top:16px">
+    <summary class="dim" style="cursor:pointer">Set one up by hand instead</summary>
+    <p class="dim" style="margin-top:12px">For a PC you cannot open a browser
+      on. You will have to copy the key across yourself, which is the part
+      pairing exists to avoid — prefer the link.</p>
+    <form method="post" action="/settings/key" class="row-form">
+      <input name="label" class="grow" maxlength="60" placeholder="Which PC is it?">
+      <button type="submit">Create a key</button>
+    </form>
+  </details>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Your shortcuts</h2>
+    <span class="dim">only you see these</span>
+  </div>
+  {% if my_reasons %}
+  <div class="chips" style="margin-bottom:12px">
+    {% for r in my_reasons %}
+    <form method="post" action="/kick-log/shortcut" style="display:inline">
+      <input type="hidden" name="next" value="/settings">
+      <input type="hidden" name="remove" value="{{ r }}">
+      <button class="chip" type="submit" title="Remove this shortcut">
+        {{ r }} <span class="danger-link">✕</span></button>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="dim" style="margin-bottom:12px">None yet — everyone gets the shared
+    list on the <a href="/kick-log">Kick Log</a> and the audit prompt; these are
+    added on top, for you only.</p>
+  {% endif %}
+  <form method="post" action="/kick-log/shortcut" class="row-form">
+    <input type="hidden" name="next" value="/settings">
+    <input name="reason" class="grow" maxlength="60"
+           placeholder="Add a reason shortcut of your own" required>
+    <button type="submit">Add shortcut</button>
+  </form>
+</section>
+
+<script>
+document.querySelectorAll(".pkey-show").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var box = btn.parentElement.querySelector(".pkey");
+    var hidden = box.type === "password";
+    box.type = hidden ? "text" : "password";
+    btn.textContent = hidden ? "Hide" : "Show";
+    if (hidden) box.select();
+  });
+});
+</script>
+{% endblock %}

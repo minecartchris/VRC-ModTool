@@ -1,14 +1,19 @@
 """Package the roster agent as a single Windows .exe for moderators.
 
-    python build_agent.py --server https://vrcmod.example.cc --token ROSTER_TOKEN
+    python build_agent.py --server https://vrcmod.example.cc
 
-Produces dist/VRChatRosterAgent.exe with the server URL and token compiled in,
-so a moderator downloads one file and double-clicks it. Nothing to install —
-no Python, no Vosk, no audio libraries.
+Produces dist/VRChatRosterAgent.exe with the server URL compiled in, so a
+moderator downloads one file and double-clicks it. Nothing to install — no
+Python, no Vosk, no audio libraries.
 
-Use the server's `roster_token`, never `sync_token`. Anyone holding the .exe
-can pull strings out of it, so the credential inside must only be able to
-report who is in an instance — not read incidents or age checks.
+**No credential is baked in by default.** On first run the agent prints a link,
+a moderator opens it in the panel, and the server hands that PC its own key.
+Anyone holding the .exe can pull strings out of it, so the less that is in
+there, the better: a leaked build is then worth nothing at all.
+
+`--token` still bakes one in for the old behaviour. If you use it, use the
+server's `roster_token` and never `sync_token` — the value inside must only be
+able to report who is in an instance, not read incidents or age checks.
 """
 
 import argparse
@@ -34,8 +39,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--server", required=True,
                     help="e.g. https://vrcmod.example.cc")
-    ap.add_argument("--token", required=True,
-                    help="the server's roster_token (NOT sync_token)")
+    ap.add_argument("--token", default="",
+                    help="optional: bake in the server's roster_token (NOT "
+                         "sync_token). Omit, and the agent pairs on first run")
     ap.add_argument("--keep-baked", action="store_true",
                     help="leave agent_baked.py behind for inspection")
     args = ap.parse_args()
@@ -43,7 +49,11 @@ def main() -> int:
     if not args.server.startswith(("http://", "https://")):
         ap.error("--server must include the scheme, e.g. https://…")
 
-    print(f"Baking in {args.server}  (token {args.token[:4]}…{args.token[-4:]})")
+    if args.token:
+        print(f"Baking in {args.server}  "
+              f"(token {args.token[:4]}…{args.token[-4:]})")
+    else:
+        print(f"Baking in {args.server}  (no token — pairs on first run)")
     write_baked(args.server, args.token)
     try:
         cmd = [
@@ -72,6 +82,9 @@ def main() -> int:
     print(f"\nBuilt {exe}  ({exe.stat().st_size / 1e6:.1f} MB)")
     print("Hand this to a moderator who is in the instance; they double-click "
           "it and leave it running.")
+    if not args.token:
+        print("On first run it prints a link for them to open in the panel, "
+              "and is handed its own key.")
     print("Windows SmartScreen will warn on first run because the binary is "
           "unsigned — 'More info' then 'Run anyway'.")
     return 0

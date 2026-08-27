@@ -49,9 +49,17 @@
     if (pill) pill.hidden = false;
   }
 
+  /* Pages showing one instance ask only about that one, so a moderator
+     agenting a different world does not reload this page on every join.
+     Every agent in the same room shares the scope, so a colleague's report of
+     your own instance still refreshes you. */
+  var instance = meta.getAttribute("data-instance") || "";
+  var stateUrl = "/api/state" +
+    (instance ? "?instance=" + encodeURIComponent(instance) : "");
+
   function tick() {
     if (paused || document.hidden) return;
-    fetch("/api/state", { credentials: "same-origin", cache: "no-store" })
+    fetch(stateUrl, { credentials: "same-origin", cache: "no-store" })
       .then(function (r) {
         if (r.status === 401) { location.href = "/login"; return null; }
         return r.ok ? r.json() : null;
@@ -62,6 +70,17 @@
       })
       .catch(function () { /* server down: keep showing what we have */ });
   }
+
+  /* A second click on Submit is never a second kick. The server files one
+     log either way, but a button that keeps looking clickable invites the
+     click that made people doubt it. */
+  document.querySelectorAll("form[data-once]").forEach(function (form) {
+    form.addEventListener("submit", function () {
+      var btn = form.querySelector('button[type="submit"]');
+      // After the event, so the submission itself still goes out.
+      if (btn) setTimeout(function () { btn.disabled = true; }, 0);
+    });
+  });
 
   if (toggle) {
     toggle.addEventListener("click", function () {

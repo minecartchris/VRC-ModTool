@@ -1,7 +1,8 @@
 {# Reason prompt for one audit-log kick/warn. Chips mirror the Teen Chillout
    web tool's COMMON_REASONS so both tools produce comparable reason text. #}
 {% macro reason_form(a, reasons, current_url) -%}
-<form method="post" action="/pending/{{ a.id }}/reason" class="reason-form">
+<form method="post" action="/pending/{{ a.id }}/reason" class="reason-form"
+      data-once>
   <input type="hidden" name="next" value="{{ current_url }}">
   <div class="chips reason-chips">
     {% for r in reasons %}
