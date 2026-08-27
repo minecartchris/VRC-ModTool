@@ -5,7 +5,8 @@
   <h1>Kicks &amp; Warns Awaiting a Reason</h1>
   <p class="lead">Read from the VRChat group audit log. VRChat records that you
     kicked someone, never why — add it here and it becomes a proper log entry
-    and a Discord post.</p>
+    and a Discord post.
+    {% if expire_hours %}Prompts stop asking after {{ expire_hours }} hours.{% endif %}</p>
 </div>
 
 {% if not audit.configured %}
@@ -100,6 +101,30 @@
     {{ reason_form(a, reasons, current_url) }}
   </div>
   {% endfor %}
+</section>
+{% endif %}
+
+{% set timed_out = recent | selectattr("expired_at") | list %}
+{% if timed_out %}
+<section class="card">
+  <div class="card-head">
+    <h2 style="margin:0">Timed out</h2>
+    <span class="dim">no reason given within {{ expire_hours }} hours</span>
+  </div>
+  <p class="dim" style="margin-top:0">These stopped asking. The kick or warn
+    still happened and is still in VRChat's audit log — it just never became a
+    log entry here. File one by hand from the
+    <a href="/kick-log">Kick Log</a> if it still matters.</p>
+  <ul class="list">
+    {% for a in timed_out[:10] %}
+    <li>
+      <span class="pill pill-mut">{{ a.action }}</span>
+      <strong>{{ a.target_name }}</strong>
+      <span class="dim">by {{ a.actor_name or "unknown" }}</span>
+      <span class="dim" style="margin-left:auto">{{ fmt_ago(a.created_at) }}</span>
+    </li>
+    {% endfor %}
+  </ul>
 </section>
 {% endif %}
 

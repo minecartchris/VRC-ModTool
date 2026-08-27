@@ -125,13 +125,23 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         """
         return [r for r in database.all_rosters() if _roster_allowed(cfg, r)]
 
+    def pending_rows(actor_id: str = "", include_done: bool = False) -> list:
+        """The prompt list, with anything too old dropped on the way past.
+
+        Every read goes through here so the expiry cannot be forgotten at one
+        call site and quietly leave stale prompts on one page.
+        """
+        hours = float(cfg.get("pending_expire_hours", 12) or 0)
+        return database.pending_actions(actor_id, include_done,
+                                        expire_after=hours * 3600)
+
     def hides_others(user_id: str) -> bool:
         """Whether this moderator has turned off other people's prompts."""
         return database.pref(user_id, "hide_others") == "1"
 
     def pending_count(sess: dict) -> int:
         """What the nav badge shows — the same set the page will show."""
-        rows = database.pending_actions()
+        rows = pending_rows()
         if hides_others(sess["user_id"]):
             rows = [a for a in rows if a["actor_id"] == sess["user_id"]]
         return len(rows)
@@ -206,7 +216,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             # Drives the Admin nav item and every admin-only control.
             "am_admin": is_admin(sess["user_id"]) if sess else False,
             # Drives the "you kicked someone — why?" prompt on every page.
-            "my_pending": (database.pending_actions(sess["user_id"])
+            "my_pending": (pending_rows(sess["user_id"])
                            if sess else []),
             "pending_total": pending_count(sess) if sess else 0,
             **ctx})
@@ -636,8 +646,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     def pending_page(request: Request):
         sess = require(request)
         hide_others = hides_others(sess["user_id"])
-        mine = database.pending_actions(sess["user_id"])
-        others = [a for a in database.pending_actions()
+        mine = pending_rows(sess["user_id"])
+        others = [a for a in pending_rows()
                   if a["actor_id"] != sess["user_id"]]
         return page(request, "pending.html", session=sess, mine=mine,
                     # Hidden means hidden from this moderator's view only;
@@ -646,7 +656,9 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                     others_count=len(others), hide_others=hide_others,
                     audit=audit.status(),
                     reasons=reason_chips(sess["user_id"]),
-                    recent=database.pending_actions(include_done=True)[:15])
+                    recent=pending_rows(include_done=True)[:25],
+                    expire_hours=int(float(cfg.get("pending_expire_hours", 12)
+                                           or 0)))
 
     @app.post("/pending/others")
     def pending_others(request: Request, hide: str = Form("1")):
@@ -666,7 +678,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         log either way, and can still be filed by hand from the Kick Log.
         """
         sess = require(request)
-        for a in database.pending_actions():
+        for a in pending_rows():
             if a["actor_id"] != sess["user_id"]:
                 database.dismiss_pending_action(a["id"])
         return RedirectResponse("/pending", status_code=303)

@@ -41,6 +41,10 @@ DEFAULTS = {
     # moderator holding `group-audit-view` on that group. Empty disables it.
     "audit_group": "",
     "audit_poll_seconds": 60,
+    # How long a kick or warn keeps asking for a reason before it gives up.
+    # A day later nobody remembers which of four people it was, and a page of
+    # stale prompts is a page people stop reading. 0 turns expiry off.
+    "pending_expire_hours": 12,
     # Where a completed log is announced. Same embed format as the Teen
     # Chillout web tool, so both can post to the same channel.
     "discord_webhook_url": "",

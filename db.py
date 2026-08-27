@@ -143,7 +143,10 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     reason      TEXT,
     resolved_at REAL,
     incident_id TEXT,
-    dismissed   INTEGER DEFAULT 0
+    dismissed   INTEGER DEFAULT 0,
+    -- Nobody answered in time. Kept apart from `dismissed` so the page can
+    -- tell "a moderator waved this away" from "this timed out".
+    expired_at  REAL
 );
 CREATE INDEX IF NOT EXISTS ix_pending_actor ON pending_actions(actor_id);
 
@@ -304,6 +307,11 @@ _ADDED_COLUMNS = {
     },
     "web_sessions": {
         "vrc_cookie": "TEXT",
+    },
+    "pending_actions": {
+        # Prompts that timed out. Added after the first release, so an old
+        # database gets the column rather than a rebuild.
+        "expired_at": "REAL",
     },
     "rosters": {
         "seen_at": "REAL",
@@ -671,12 +679,22 @@ class Database:
              time.time()))
         return True
 
-    def pending_actions(self, actor_id: str = "", include_done: bool = False
-                        ) -> list[dict]:
+    def pending_actions(self, actor_id: str = "", include_done: bool = False,
+                        expire_after: float = 0.0) -> list[dict]:
+        """Prompts awaiting a reason.
+
+        `expire_after` seconds gives up on the ones nobody answered, on the
+        way past. Expiring on read rather than on a timer means the list is
+        never showing something it is about to drop, and there is one place
+        it happens instead of one per caller.
+        """
+        if expire_after > 0:
+            self.expire_pending_actions(expire_after)
         sql = "SELECT * FROM pending_actions WHERE 1=1"
         params: list = []
         if not include_done:
-            sql += " AND resolved_at IS NULL AND COALESCE(dismissed, 0) = 0"
+            sql += (" AND resolved_at IS NULL AND COALESCE(dismissed, 0) = 0"
+                    " AND expired_at IS NULL")
         if actor_id:
             sql += " AND actor_id = ?"
             params.append(actor_id)
@@ -707,6 +725,23 @@ class Database:
         self._exec(
             "UPDATE pending_actions SET reason=?, incident_id=?, resolved_at=? "
             "WHERE id=?", (reason, incident_id, time.time(), action_id))
+
+    def expire_pending_actions(self, older_than: float) -> int:
+        """Give up on prompts older than this. Returns how many were dropped.
+
+        A kick from yesterday is not going to get a reason today — the
+        moderator has long since forgotten which of four people it was. The
+        row stays for the record; it just stops asking.
+        """
+        now = time.time()
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE pending_actions SET expired_at=? WHERE "
+                "resolved_at IS NULL AND COALESCE(dismissed, 0) = 0 "
+                "AND expired_at IS NULL AND created_at < ?",
+                (now, now - older_than))
+            self.conn.commit()
+            return cur.rowcount
 
     def dismiss_pending_action(self, action_id: str) -> None:
         self._exec("UPDATE pending_actions SET dismissed=1 WHERE id=?",
