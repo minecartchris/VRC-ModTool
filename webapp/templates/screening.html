@@ -21,7 +21,8 @@
     · updated {{ fmt_ago(current.updated_at) }}
   </p>
 
-  {% if current.headcount is not none and (counts.all - current.headcount)|abs > 4 %}
+  {% if current.headcount is not none
+        and (counts.all - current.headcount)|abs > current.allowance %}
   <p class="banner banner-warn">{{ icon("warning", 18) }}
     <span><strong>This list and VRChat disagree.</strong> The agents report
       {{ counts.all }}; VRChat says {{ current.headcount }} are in the

@@ -1469,6 +1469,16 @@ COUNT_TOLERANCE = 4
 COUNT_TOLERANCE_SHARE = 0.15
 
 
+def _count_allowance(truth: int) -> int:
+    """How far an agent may sit from the headcount and still be in the room.
+
+    Measured against the live group: a healthy agent runs about three under,
+    because the headcount includes people still loading in whose join line the
+    log has not written yet. Four is the floor, and it scales with the room.
+    """
+    return max(COUNT_TOLERANCE, int(truth * COUNT_TOLERANCE_SHARE))
+
+
 def _trust_reporters(reporters: list[dict], truth: int | None) -> tuple:
     """Which of these agents is actually in this room, and which is lost.
 
@@ -1485,7 +1495,7 @@ def _trust_reporters(reporters: list[dict], truth: int | None) -> tuple:
     if truth is None or len(reporters) < 2:
         return reporters, []
 
-    allowance = max(COUNT_TOLERANCE, int(truth * COUNT_TOLERANCE_SHARE))
+    allowance = _count_allowance(truth)
     scored = [(abs(len(r["players"]) - truth), r) for r in reporters]
     closest = min(off for off, _ in scored)
     if closest > allowance:
@@ -1561,6 +1571,9 @@ def _merge_rosters(rosters: list[dict], publisher,
             # What VRChat says, what we are showing, and anybody whose report
             # was set aside for describing somewhere else.
             "headcount": headcount,
+            # The page warns on the same number the filter acts on, so it
+            # cannot complain about a gap it is willing to live with.
+            "allowance": _count_allowance(headcount) if headcount else None,
             "ignored": lost,
         })
 
