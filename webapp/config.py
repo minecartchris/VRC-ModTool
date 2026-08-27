@@ -45,6 +45,11 @@ DEFAULTS = {
     # A day later nobody remembers which of four people it was, and a page of
     # stale prompts is a page people stop reading. 0 turns expiry off.
     "pending_expire_hours": 12,
+    # An agent whose player list has not changed in this long is treated as
+    # no longer reading the room. Beware in quiet instances: a healthy agent
+    # in a room where nobody joins or leaves looks identical to a stuck one.
+    # 0 turns the check off and goes back to trusting the heartbeat alone.
+    "roster_stale_minutes": 10,
     # Where a completed log is announced. Same embed format as the Teen
     # Chillout web tool, so both can post to the same channel.
     "discord_webhook_url": "",

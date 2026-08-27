@@ -37,11 +37,12 @@
       {{ current.ignored|length }} agent{{ "" if current.ignored|length == 1 else "s" }}.</strong>
       {% for bad in current.ignored %}
       {{ bad.reporter.client_name or "An agent" }} reported {{ bad.said }}
-      players where VRChat says {{ current.headcount }}{{ ", " if not loop.last else "" }}
+      player{{ "" if bad.said == 1 else "s" }} — {{ bad.why }}{{ "; " if not loop.last else "." }}
       {% endfor %}
-      — so its list is not merged into this one. It is most likely still
-      reading a room it has left; restarting that agent fixes it.</span></p>
+      Their lists are not merged into this one. Restarting that agent is
+      usually all it takes.</span></p>
   {% endif %}
+
   {% elif choices %}
   <p class="lead">You aren't running an agent, so there is no instance that is
     yours. Pick whose to look at — each list is only the people in that

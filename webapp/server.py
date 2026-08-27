@@ -770,9 +770,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                   instance: str = "", reporter: str = ""):
         sess = require(request)
         rosters = shown_rosters()
-        current, choices = _pick_instance(rosters, sess["user_id"],
-                                          instance or reporter, publisher,
-                                          headcounts(request, rosters))
+        current, choices = _pick_instance(
+            rosters, sess["user_id"], instance or reporter, publisher,
+            headcounts(request, rosters),
+            float(cfg.get("roster_stale_minutes", 10) or 0) * 60)
         cached = database.all_users()
         latest = agecheck.latest_by_user(database.all_age_checks())
         note_word = (cfg.get("note_filter") or "").strip().lower()
@@ -1469,6 +1470,79 @@ COUNT_TOLERANCE = 4
 COUNT_TOLERANCE_SHARE = 0.15
 
 
+#: An agent whose list has not changed in this long has stopped following the
+#: room, even if it is still heartbeating. Note the cost: in a genuinely quiet
+#: instance a healthy agent looks the same as a stuck one, and gets dropped
+#: with it. Configurable for that reason.
+CONTENT_STALE_AFTER = 600.0
+
+
+def _identity(player: dict) -> str:
+    return (player.get("user_id") or "").lower() or \
+        f"name:{(player.get('name') or '').lower()}"
+
+
+def _roster_identities(reporter: dict) -> frozenset:
+    return frozenset(_identity(p) for p in reporter["players"])
+
+
+def _drop(reporter: dict, why: str, said: int, off_by: int | None = None) -> dict:
+    return {"reporter": reporter, "said": said, "off_by": off_by, "why": why}
+
+
+def _fresh_content(reporters: list[dict], max_age: float) -> tuple:
+    """Agents whose list has actually moved lately.
+
+    Heartbeating is not the same as reading: an agent can keep saying it is
+    here while its log tail is stuck on a room from an hour ago, and that list
+    is worse than no list because every name in it is real.
+    """
+    if not max_age:
+        return reporters, []
+    now = time.time()
+    keep, stale = [], []
+    for r in reporters:
+        age = now - (r["updated_at"] or 0)
+        if age > max_age:
+            stale.append(_drop(r, f"nothing new for {int(age // 60)} minutes",
+                               len(r["players"])))
+        else:
+            keep.append(r)
+    return keep, stale
+
+
+def _best_reporter(reporters: list[dict], truth: int) -> dict:
+    """The one to believe: closest to the headcount, freshest breaking a tie."""
+    return min(reporters,
+               key=lambda r: (abs(len(r["players"]) - truth),
+                              -(r["updated_at"] or 0)))
+
+
+def _collapse_to_best(reporters: list[dict], players: list,
+                      truth: int | None) -> tuple:
+    """When the merged list overshoots the room, stop merging.
+
+    Two agents a few names apart are two views of one room and the union is
+    the better answer. But when the union comes out well *above* what VRChat
+    says is in there, the extra names are not late arrivals — they are
+    somebody else's room, and unioning has invented a crowd. In that case one
+    agent is right and the rest are not, so keep the closest to the headcount
+    and anybody reporting exactly the same people.
+    """
+    if truth is None or len(reporters) < 2:
+        return reporters, []
+    if len(players) - truth <= _count_allowance(truth):
+        return reporters, []            # the union is a fair description
+
+    best = _best_reporter(reporters, truth)
+    wanted = _roster_identities(best)
+    keep = [r for r in reporters if _roster_identities(r) == wanted]
+    dropped = [_drop(r, "its list disagrees with the closest agent",
+                     len(r["players"]), abs(len(r["players"]) - truth))
+               for r in reporters if _roster_identities(r) != wanted]
+    return keep, dropped
+
+
 def _count_allowance(truth: int) -> int:
     """How far an agent may sit from the headcount and still be in the room.
 
@@ -1505,13 +1579,14 @@ def _trust_reporters(reporters: list[dict], truth: int | None) -> tuple:
         return reporters, []
 
     keep = [r for off, r in scored if off <= allowance]
-    lost = [{"reporter": r, "off_by": off, "said": len(r["players"])}
+    lost = [_drop(r, "it looks like it is in another room", len(r["players"]), off)
             for off, r in scored if off > allowance]
     return keep, lost
 
 
 def _merge_rosters(rosters: list[dict], publisher,
-                   counts: dict | None = None) -> list[dict]:
+                   counts: dict | None = None,
+                   content_max_age: float = CONTENT_STALE_AFTER) -> list[dict]:
     """One entry per instance, however many agents are reporting it.
 
     Two moderators in the same room see the same list. Their logs are not
@@ -1535,22 +1610,40 @@ def _merge_rosters(rosters: list[dict], publisher,
         # recent one is the last thing known, and the page says it is stale.
         current = live or reporters[:1]
 
+        # An agent that is heartbeating but no longer reading is worse than a
+        # dead one: its stale list looks current, and every name on it is
+        # real. Dropped first, so nothing below is decided on it — but never
+        # to the point of leaving the room with no view at all.
+        lost = []
+        fresher, stale = _fresh_content(current, content_max_age)
+        if fresher:
+            current, lost = fresher, stale
+
         # What VRChat says is in there, if anybody has asked recently. With
         # two agents claiming one room and only one of them right, this is
         # what tells them apart.
         truth = (counts or {}).get(f"{current[0]['world_id']}:{current[0]['instance_id']}")
         headcount = truth.get("n_users") if truth else None
-        current, lost = _trust_reporters(current, headcount)
+        current, wrong_room = _trust_reporters(current, headcount)
+        lost += wrong_room
 
-        players, seen = [], set()
-        for r in current:
-            for p in r["players"]:
-                ident = (p.get("user_id") or "").lower() or \
-                    f"name:{(p.get('name') or '').lower()}"
-                if ident and ident not in seen:
-                    seen.add(ident)
-                    players.append(p)
-        players.sort(key=lambda p: (p.get("name") or "").lower())
+        def union(chosen: list) -> list:
+            found, seen = [], set()
+            for r in chosen:
+                for p in r["players"]:
+                    ident = _identity(p)
+                    if ident and ident not in seen:
+                        seen.add(ident)
+                        found.append(p)
+            return sorted(found, key=lambda p: (p.get("name") or "").lower())
+
+        players = union(current)
+        # If merging them together describes more people than are in the room,
+        # they are not two views of one room; one of them is somewhere else.
+        current, overshot = _collapse_to_best(current, players, headcount)
+        if overshot:
+            lost += overshot
+            players = union(current)
 
         out.append({
             "key": key,
@@ -1582,7 +1675,8 @@ def _merge_rosters(rosters: list[dict], publisher,
 
 
 def _pick_instance(rosters: list[dict], user_id: str, want: str,
-                   publisher, counts: dict | None = None
+                   publisher, counts: dict | None = None,
+                   content_max_age: float = CONTENT_STALE_AFTER
                    ) -> tuple[dict | None, list[dict]]:
     """Which room this moderator is looking at, and what else is live.
 
@@ -1595,7 +1689,7 @@ def _pick_instance(rosters: list[dict], user_id: str, want: str,
     alternative for them is an empty page. Where there is a choice they are
     asked to make it rather than being handed an arbitrary room.
     """
-    instances = _merge_rosters(rosters, publisher, counts)
+    instances = _merge_rosters(rosters, publisher, counts, content_max_age)
     live = [i for i in instances if i["live"]]
     if want:
         chosen = next((i for i in instances if i["key"] == want), None)
