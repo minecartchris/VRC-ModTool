@@ -13,6 +13,7 @@ import atexit
 import os
 import re
 import secrets
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,18 +75,27 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         "after an unclean stop" if unclean else "after a clean stop")
     print(f"[boot] started, pid {os.getpid()}", flush=True)
 
+    stopped = threading.Event()
+
     def _note_stop() -> None:
+        # Once, whichever hook gets there first.
+        if stopped.is_set():
+            return
+        stopped.set()
         try:
             database.note_service_event("stop", os.getpid(), "shutting down")
             print("[boot] shutting down cleanly", flush=True)
         except Exception:
             pass                # a failure here must not block the exit
 
-    # atexit covers a normal SIGTERM from systemd; the signal handler covers
-    # the case where something exits before atexit would run.
+    # The lifespan hook, not atexit: uvicorn's SIGTERM path tears the loop
+    # down and exits without atexit ever running, which is how the first
+    # attempt at this recorded starts and never stops. atexit stays as a
+    # backstop for the ways out that do unwind normally.
     atexit.register(_note_stop)
 
     app = FastAPI(title="VRChat Mod Suite", docs_url=None, redoc_url=None)
+    app.add_event_handler("shutdown", _note_stop)
     app.state.cfg = cfg
     app.state.db = database
     app.state.sessions = sessions
