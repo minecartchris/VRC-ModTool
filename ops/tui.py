@@ -239,6 +239,9 @@ class Dashboard:
                 f"{d['queue_done_24h']} today, last {ht(data['at'] - d['queue_last_done'])} ago",
                 f"  Audit     {d['audit_bans']:>7} bans read, watermark "
                 f"{ht(data['at'] - d['audit_watermark'])} old",
+                f"  Restarts  {d.get('starts_24h', 0):>7} in 24h"
+                + (f", {d['unclean_24h']} unclean" if d.get("unclean_24h")
+                   else ""),
                 f"  Database  {hb(d['size']):>7}   +{hb(d['wal'])} wal",
             ]
             for i, row in enumerate(rows):

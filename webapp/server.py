@@ -9,6 +9,8 @@ Two ways in:
   * desktop clients — a shared token on /api/sync/* (no VRChat login needed)
 """
 
+import atexit
+import os
 import re
 import secrets
 import time
@@ -54,6 +56,34 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     database = database or db.Database()
     sessions = SessionManager(database, cfg)
     started_at = time.time()
+
+    # Write down that we started, and whether the last run ended tidily.
+    # "It keeps crashing" is only answerable if something recorded the going
+    # as well as the coming: a start with no stop before it means the last
+    # run was killed rather than asked to leave.
+    previous = database.last_service_event()
+    unclean = bool(previous and previous["event"] == "start")
+    if unclean:
+        gap = time.time() - (previous["at"] or 0)
+        print(f"[boot] previous run (pid {previous['pid']}) never logged a "
+              f"shutdown - it was killed, or the machine went down. It had "
+              f"been up {int(gap // 3600)}h{int(gap % 3600 // 60):02d}m.",
+              flush=True)
+    database.note_service_event(
+        "start", os.getpid(),
+        "after an unclean stop" if unclean else "after a clean stop")
+    print(f"[boot] started, pid {os.getpid()}", flush=True)
+
+    def _note_stop() -> None:
+        try:
+            database.note_service_event("stop", os.getpid(), "shutting down")
+            print("[boot] shutting down cleanly", flush=True)
+        except Exception:
+            pass                # a failure here must not block the exit
+
+    # atexit covers a normal SIGTERM from systemd; the signal handler covers
+    # the case where something exits before atexit would run.
+    atexit.register(_note_stop)
 
     app = FastAPI(title="VRChat Mod Suite", docs_url=None, redoc_url=None)
     app.state.cfg = cfg

@@ -277,6 +277,22 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     PRIMARY KEY (user_id, name)
 );
 
+-- One row per time this server started or stopped.
+--
+-- Written so the next "why did it go down?" is answered by looking rather
+-- than by trawling. A start with no matching stop before it means the last
+-- run ended abruptly - killed, out of memory, or the box went away - and
+-- that is exactly the distinction a journal full of ordinary request lines
+-- does not make obvious.
+CREATE TABLE IF NOT EXISTS service_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    at      REAL,
+    event   TEXT,        -- start | stop
+    pid     INTEGER,
+    detail  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_service_log_at ON service_log(at);
+
 -- What VRChat says is in an instance, cached briefly. The agents report who
 -- is in a room; this is the only independent check on whether they are in the
 -- room they think they are. Short-lived on purpose: a headcount minutes old
@@ -774,6 +790,21 @@ class Database:
         r = self._one("SELECT MAX(created_at) AS t FROM pending_actions "
                       "WHERE group_id=?", (group_id,))
         return (r["t"] if r and r["t"] else 0.0)
+
+    # ---------------- when this server came and went ----------------
+    def note_service_event(self, event: str, pid: int = 0,
+                           detail: str = "") -> None:
+        self._exec("INSERT INTO service_log (at, event, pid, detail) "
+                   "VALUES (?,?,?,?)",
+                   (time.time(), event, int(pid or 0), detail or ""))
+
+    def service_events(self, limit: int = 40) -> list[dict]:
+        return [dict(r) for r in self._query(
+            "SELECT * FROM service_log ORDER BY at DESC LIMIT ?", (limit,))]
+
+    def last_service_event(self) -> dict | None:
+        rows = self.service_events(1)
+        return rows[0] if rows else None
 
     # ---------------- what VRChat says is in a room ----------------
     def note_instance_count(self, location: str, n_users: int,
