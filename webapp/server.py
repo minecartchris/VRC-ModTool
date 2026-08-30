@@ -15,6 +15,7 @@ import re
 import secrets
 import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -94,8 +95,15 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     # backstop for the ways out that do unwind normally.
     atexit.register(_note_stop)
 
-    app = FastAPI(title="VRChat Mod Suite", docs_url=None, redoc_url=None)
-    app.add_event_handler("shutdown", _note_stop)
+    @asynccontextmanager
+    async def lifespan(_app):
+        # Starlette dropped add_event_handler/on_event; this is the supported
+        # hook, and the only one that runs inside uvicorn's SIGTERM path.
+        yield
+        _note_stop()
+
+    app = FastAPI(title="VRChat Mod Suite", docs_url=None, redoc_url=None,
+                  lifespan=lifespan)
     app.state.cfg = cfg
     app.state.db = database
     app.state.sessions = sessions
