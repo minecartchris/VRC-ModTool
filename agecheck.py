@@ -113,9 +113,15 @@ def record(database: "db.Database", *, name: str, user_id: str = "",
 
 
 def latest_by_user(checks: list[dict]) -> dict[str, dict]:
-    """Most recent check per user_id, for showing a player's current status."""
+    """Most recent check per user_id, for showing a player's current status.
+
+    Cleared checks are skipped. Clearing exists to send everybody back to
+    unchecked without throwing away who did the screening, so these rows
+    still count towards a moderator's total — they just no longer speak for
+    whether the player in front of you has been verified.
+    """
     out: dict[str, dict] = {}
     for c in sorted(checks, key=lambda c: c.get("created_at") or 0):
-        if c.get("user_id"):
+        if c.get("user_id") and not c.get("cleared_at"):
             out[c["user_id"]] = c
     return out

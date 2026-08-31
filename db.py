@@ -366,6 +366,13 @@ _ADDED_COLUMNS = {
         # database gets the column rather than a rebuild.
         "expired_at": "REAL",
     },
+    "age_checks": {
+        # Cleared, not deleted. A cleared check no longer says anything about
+        # whether that player is verified — the point of clearing is that
+        # everybody goes back to unchecked — but the moderator who did the
+        # work still did it, so the leaderboard keeps counting it.
+        "cleared_at": "REAL",
+    },
     "rosters": {
         "seen_at": "REAL",
         # Whose agent this is, when it reported with a paired key. Empty for
@@ -383,7 +390,7 @@ _INCIDENT_FIELDS = (
 _AGE_CHECK_FIELDS = (
     "user_id", "name", "verdict", "reported_age", "world_name", "world_id",
     "instance_id", "incident_id", "checked_by", "checked_by_id", "note",
-    "source", "created_at", "deleted",
+    "source", "created_at", "cleared_at", "deleted",
 )
 
 
@@ -548,6 +555,11 @@ class Database:
                              (check["id"],))
         if existing and not check.get("created_at"):
             row["created_at"] = existing["created_at"]   # keep, don't re-stamp
+        if existing and existing["cleared_at"] and not check.get("cleared_at"):
+            # A desktop client that predates this column pushes records
+            # without it. Taking that at face value would quietly un-clear
+            # everything the next time it synced.
+            row["cleared_at"] = existing["cleared_at"]
         if existing and not self._differs(existing, row, _AGE_CHECK_FIELDS):
             return False
         row["id"] = check["id"]
@@ -588,6 +600,7 @@ class Database:
             "note": c.get("note", "") or "",
             "source": c.get("source", "") or "",
             "created_at": c.get("created_at") or time.time(),
+            "cleared_at": c.get("cleared_at") or None,
             "deleted": int(c.get("deleted", 0) or 0),
         }
 
@@ -605,8 +618,35 @@ class Database:
             "checked_by_id": r["checked_by_id"] or "",
             "note": r["note"] or "", "source": r["source"] or "",
             "created_at": r["created_at"], "updated_at": r["updated_at"] or 0.0,
+            "cleared_at": r["cleared_at"] or 0.0,
             "deleted": bool(r["deleted"]),
         }
+
+    def clear_age_checks(self, by: str = "") -> int:
+        """Send everybody back to unchecked, without losing who did the work.
+
+        The rows stay, and the leaderboard keeps counting them — what goes is
+        their say over whether a player is currently verified. Screening
+        starts from scratch; the record of who screened whom does not.
+        """
+        now = time.time()
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE age_checks SET cleared_at=?, updated_at=? "
+                "WHERE cleared_at IS NULL AND COALESCE(deleted, 0) = 0",
+                (now, now))
+            self.conn.commit()
+            return cur.rowcount
+
+    def age_check_counts(self) -> dict:
+        """How many are live, and how many have been cleared."""
+        row = self._one(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN cleared_at IS NOT NULL THEN 1 ELSE 0 END) AS cleared "
+            "FROM age_checks WHERE COALESCE(deleted, 0) = 0")
+        total = int(row["total"] or 0) if row else 0
+        cleared = int(row["cleared"] or 0) if row else 0
+        return {"total": total, "cleared": cleared, "live": total - cleared}
 
     # ---------------- screening cache ----------------
     def all_users(self) -> dict:
@@ -715,6 +755,17 @@ class Database:
 
     def delete_session(self, token_hash: str) -> None:
         self._exec("DELETE FROM web_sessions WHERE token=?", (token_hash,))
+
+    def active_sessions(self) -> list[dict]:
+        """Who is signed in right now, newest first."""
+        rows = self._query(
+            "SELECT user_id, name, groups, created_at, expires_at "
+            "FROM web_sessions WHERE expires_at > ? ORDER BY created_at DESC",
+            (time.time(),))
+        return [{"user_id": r["user_id"] or "", "name": r["name"] or "",
+                 "groups": json.loads(r["groups"] or "[]"),
+                 "created_at": r["created_at"] or 0.0,
+                 "expires_at": r["expires_at"] or 0.0} for r in rows]
 
     def purge_expired_sessions(self) -> None:
         self._exec("DELETE FROM web_sessions WHERE expires_at < ?",

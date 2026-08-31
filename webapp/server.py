@@ -225,6 +225,26 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                                          info.get("capacity", 0) or 0)
         return database.instance_counts(COUNT_MAX_AGE)
 
+    def signed_in_now() -> list:
+        """Everyone with a session, and whether we can act as them in VRChat.
+
+        The second half is the one that matters operationally: the invite
+        queue runs on borrowed VRChat sessions, and a moderator who is signed
+        in here but whose client this process cannot use is no help to it.
+        """
+        with sessions._lock:                          # noqa: SLF001
+            clients = list(sessions._clients.values())  # noqa: SLF001
+        usable = set()
+        for api in clients:
+            who = getattr(api, "user", None)
+            if isinstance(who, dict) and who.get("id"):
+                usable.add(who["id"])
+        rows = []
+        for s in database.active_sessions():
+            rows.append({**s, "vrchat": s["user_id"] in usable,
+                         "admin": is_admin(s["user_id"])})
+        return rows
+
     def pending_rows(actor_id: str = "", include_done: bool = False) -> list:
         """The prompt list, with anything too old dropped on the way past.
 
@@ -1185,6 +1205,9 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             candidates=[u for u in database.known_users()
                         if u["user_id"] not in {a["user_id"] for a in admins}],
             keys=database.agent_keys(),
+            signed_in=signed_in_now(),
+            checks_state=database.age_check_counts(),
+            cleared_result=request.query_params.get("cleared", ""),
             allowed=database.allowed_users(),
             allowed_result=request.query_params.get("allowed", ""),
             queue=database.group_actions(limit=40),
@@ -1279,6 +1302,24 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
         database.allow_user(uid, name, note.strip()[:200], sess["name"])
         return RedirectResponse("/admin?allowed=added", status_code=303)
+
+    @app.post("/admin/clear-checks")
+    def admin_clear_checks(request: Request, confirm: str = Form("")):
+        """Send every player back to unchecked, keeping who did the screening.
+
+        Not a delete: the rows stay and the leaderboard still counts them.
+        What is cleared is their say over whether somebody is verified, so
+        Screening starts from a clean slate after a purge or a rule change.
+        """
+        sess = require(request)
+        if not is_admin(sess["user_id"]):
+            return RedirectResponse("/admin", status_code=303)
+        if confirm != "clear":
+            return RedirectResponse("/admin?cleared=cancelled", status_code=303)
+        count = database.clear_age_checks(sess["name"])
+        print(f"[admin] {sess['name']} ({sess['user_id']}) cleared {count} "
+              f"age checks; the leaderboard keeps them", flush=True)
+        return RedirectResponse(f"/admin?cleared={count}", status_code=303)
 
     # ---------------- agent pairing ----------------
     # The agent asks for a code, shows it with a link, and polls. A moderator
