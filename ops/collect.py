@@ -180,9 +180,12 @@ def database() -> dict:
                                            "WHERE COALESCE(deleted,0)=0 AND created_at > ?", (day,))
         out["sessions"] = _one(conn, "SELECT COUNT(*) FROM web_sessions "
                                      "WHERE expires_at > ?", (now,))
+        # Expired prompts have stopped asking, so counting them as waiting
+        # turns six into six hundred and makes the number meaningless.
         out["pending_actions"] = _one(
             conn, "SELECT COUNT(*) FROM pending_actions "
-                  "WHERE resolved_at IS NULL AND COALESCE(dismissed,0)=0")
+                  "WHERE resolved_at IS NULL AND COALESCE(dismissed,0)=0 "
+                  "AND expired_at IS NULL")
 
         # Agents: one row per reporter, so "live" is how many are still talking.
         out["agents_live"] = _one(conn, "SELECT COUNT(*) FROM rosters "
