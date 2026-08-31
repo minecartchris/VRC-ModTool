@@ -127,6 +127,14 @@
           <td class="nowrap">
             <a href="/mod-log?who={{ (r.reported_by_id or r.reported_by)|urlencode }}&days={{ days }}">
               {{ r.reported_by or "unknown" }}</a>
+            {# VRChat says who kicked; this says who wrote it down. They
+               differ whenever a moderator answers somebody else's prompt,
+               which is why a kick can appear under a name that never
+               touched the panel. #}
+            {% if r.filed_by and r.filed_by != r.reported_by %}
+            <div class="uid" title="Answered the prompt and wrote the reason">
+              logged by {{ r.filed_by }}</div>
+            {% endif %}
             {% if r.origin == "vrchat-audit" %}
             <div class="uid" title="Read from VRChat's group audit log">from the audit log</div>
             {% elif r.origin == "teenchillout" %}

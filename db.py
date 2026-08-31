@@ -331,6 +331,13 @@ _ADDED_COLUMNS = {
         # and "show me my own bans" has to keep meaning the same person.
         # Empty on rows filed before this existed; those fall back to the name.
         "reported_by_id": "TEXT",
+        # Who pressed the button, as distinct from who VRChat says did the
+        # kick. Any moderator can answer another's prompt, so a log can
+        # truthfully name one person as the actor and a different one as the
+        # person who wrote it down - and "why is my name on a kick I never
+        # logged?" has no answer unless both are kept.
+        "filed_by": "TEXT",
+        "filed_by_id": "TEXT",
         "origin": "TEXT",
     },
     "web_sessions": {
@@ -352,7 +359,8 @@ _ADDED_COLUMNS = {
 _INCIDENT_FIELDS = (
     "created_at", "trigger", "transcript", "world_name", "world_id",
     "instance_id", "players", "clip_path", "screenshot_path", "notes",
-    "status", "reported_by", "reported_by_id", "origin", "deleted",
+    "status", "reported_by", "reported_by_id", "filed_by", "filed_by_id",
+    "origin", "deleted",
 )
 _AGE_CHECK_FIELDS = (
     "user_id", "name", "verdict", "reported_age", "world_name", "world_id",
@@ -471,6 +479,8 @@ class Database:
             "status": inc.get("status", "new") or "new",
             "reported_by": inc.get("reported_by", "") or "",
             "reported_by_id": inc.get("reported_by_id", "") or "",
+            "filed_by": inc.get("filed_by", "") or "",
+            "filed_by_id": inc.get("filed_by_id", "") or "",
             "origin": inc.get("origin", "") or "",
             "deleted": int(inc.get("deleted", 0) or 0),
         }
@@ -489,6 +499,8 @@ class Database:
             "notes": r["notes"] or "", "status": r["status"] or "new",
             "reported_by": r["reported_by"] or "",
             "reported_by_id": r["reported_by_id"] or "",
+            "filed_by": r["filed_by"] or "",
+            "filed_by_id": r["filed_by_id"] or "",
             "origin": r["origin"] or "",
             "updated_at": r["updated_at"] or 0.0,
             "deleted": bool(r["deleted"]),

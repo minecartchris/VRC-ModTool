@@ -8,7 +8,10 @@
   <p class="lead">
     {{ fmt_time(inc.created_at) }} · {{ inc.world_name or "unknown world" }}
     {%- if inc.instance_id %} · instance #{{ short_instance(inc.instance_id) }}{% endif %}
-    {%- if inc.reported_by %} · filed by {{ inc.reported_by }}{% endif %}
+    {%- if inc.reported_by %} · {{ inc.reported_by }}{% endif %}
+    {%- if inc.filed_by and inc.filed_by != inc.reported_by %}
+    · <span title="VRChat recorded the kick against {{ inc.reported_by }}; this is who answered the prompt and wrote the reason.">written up by {{ inc.filed_by }}</span>
+    {%- endif %}
   </p>
 </div>
 

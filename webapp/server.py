@@ -492,7 +492,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     # ---------------- age checks ----------------
     @app.get("/age-checks", response_class=HTMLResponse)
-    def age_checks_page(request: Request, verdict: str = "", q: str = ""):
+    def age_checks_page(request: Request, verdict: str = "", q: str = "",
+                        all: str = ""):
         sess = require(request)
         rows = database.all_age_checks()
         if verdict:
@@ -501,11 +502,21 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             needle = q.lower()
             rows = [c for c in rows
                     if needle in f"{c['name']} {c['user_id']}".lower()]
+        # Eleven thousand rows is nine megabytes of HTML, which is not a page
+        # so much as a download - it is why this looked like the age checks
+        # had disappeared. Newest first, capped, and a search that still
+        # reaches all of them.
+        total = len(rows)
+        limit = 0 if all == "1" else AGE_CHECK_PAGE
+        if limit:
+            rows = rows[:limit]
         # The same instance Screening would show them, so the name suggestions
         # are the people they can actually see.
         current, _ = _pick_instance(shown_rosters(), sess["user_id"],
                                     "", publisher)
         return page(request, "age_checks.html", session=sess, checks=rows,
+                    total_checks=total, showing_all=bool(all == "1"),
+                    page_size=AGE_CHECK_PAGE,
                     verdict=verdict, q=q,
                     roster=current["players"] if current else [],
                     current=current, verdicts=agecheck.VERDICTS,
@@ -549,6 +560,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     def file_moderation_log(*, action: str, reason: str, targets: list[dict],
                             moderator: str, moderator_id: str = "",
+                            filed_by: str = "", filed_by_id: str = "",
                             when: float | None = None, world_id: str = "",
                             instance_id: str = "", origin: str = "web",
                             age_hint: int | None = None,
@@ -578,7 +590,13 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             "players": targets,
             "clip_path": "", "screenshot_path": "", "notes": "",
             "status": "reported", "reported_by": moderator,
-            "reported_by_id": moderator_id, "origin": origin,
+            "reported_by_id": moderator_id,
+            # Who typed it, which is not always who did it: any moderator can
+            # answer somebody else's prompt, and then the log carries one
+            # name as the actor and another as the author.
+            "filed_by": filed_by or moderator,
+            "filed_by_id": filed_by_id or moderator_id,
+            "origin": origin,
         }
         database.upsert_incident(incident)
 
@@ -816,6 +834,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             # the reason in - they are often different people.
             moderator=action["actor_name"] or sess["name"],
             moderator_id=action["actor_id"],
+            filed_by=sess["name"], filed_by_id=sess["user_id"],
             when=action["created_at"] or time.time(),
             world_id=world_id, instance_id=instance_id, origin="vrchat-audit",
             age_hint=int(bare) if bare.isdigit() and 1 <= int(bare) <= 120
@@ -1476,6 +1495,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 #: How long a headcount is worth trusting, and how many rooms to look up in
 #: one render. Both small: the number is only useful while it is current, and
 #: a page load should not turn into a dozen API calls.
+#: How many age checks one page shows. The whole table is eleven thousand
+#: rows and climbing; rendering it all is how the page became unusable.
+AGE_CHECK_PAGE = 300
+
 COUNT_MAX_AGE = 60.0
 COUNT_MAX_LOOKUPS = 4
 

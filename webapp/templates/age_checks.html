@@ -52,7 +52,14 @@
     </select>
     <button class="btn-primary" type="submit">Filter</button>
     {% if q or verdict %}<a class="link" href="/age-checks">clear</a>{% endif %}
-    <span class="dim" style="margin-left:auto">{{ checks|length }} shown</span>
+    <span class="dim" style="margin-left:auto">
+      {{ checks|length }} shown{% if total_checks and total_checks > checks|length %}
+      of {{ "{:,}".format(total_checks) }}{% endif %}
+      {%- if total_checks and total_checks > checks|length %}
+      · <a href="?{% if verdict %}verdict={{ verdict }}&{% endif %}{% if q %}q={{ q|urlencode }}&{% endif %}all=1">show every one</a>
+      {%- elif showing_all %}
+      · <a href="?{% if verdict %}verdict={{ verdict }}&{% endif %}{% if q %}q={{ q|urlencode }}{% endif %}">back to the latest {{ page_size }}</a>
+      {%- endif %}</span>
   </form>
 </div>
 
