@@ -123,7 +123,10 @@
             <span class="dim">+{{ r.players|length - 3 }} more</span>{% endif %}
             {% if not r.players %}<span class="dim">nobody recorded</span>{% endif %}
           </td>
-          <td class="note">{{ r.reason or "—" }}</td>
+          <td class="note">
+            {%- if r.reason %}{{ r.reason }}
+            {%- else %}<span class="dim" title="The kick is in VRChat's audit log; nobody has said why yet.">no reason given yet</span>
+            {%- endif %}</td>
           <td class="nowrap">
             <a href="/mod-log?who={{ (r.reported_by_id or r.reported_by)|urlencode }}&days={{ days }}">
               {{ r.reported_by or "unknown" }}</a>

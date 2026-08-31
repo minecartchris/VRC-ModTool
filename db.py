@@ -277,6 +277,24 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     PRIMARY KEY (user_id, name)
 );
 
+-- Every announcement this server sent, and what Discord said about it.
+--
+-- The channel had kick logs appearing twice and no way to tell whether this
+-- tool sent both. One row per attempt answers that: if the channel shows two
+-- messages and this shows one send, the second came from somewhere else.
+CREATE TABLE IF NOT EXISTS webhook_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          REAL,
+    incident_id TEXT,
+    action      TEXT,
+    target      TEXT,
+    reason      TEXT,
+    moderator   TEXT,
+    status      INTEGER,     -- HTTP status, or 0 if it never got that far
+    error       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_webhook_log_at ON webhook_log(at);
+
 -- One row per time this server started or stopped.
 --
 -- Written so the next "why did it go down?" is answered by looking rather
@@ -802,6 +820,25 @@ class Database:
         r = self._one("SELECT MAX(created_at) AS t FROM pending_actions "
                       "WHERE group_id=?", (group_id,))
         return (r["t"] if r and r["t"] else 0.0)
+
+    # ---------------- what we told Discord ----------------
+    def note_webhook(self, incident_id: str, action: str, target: str,
+                     reason: str, moderator: str, status: int = 0,
+                     error: str = "") -> None:
+        self._exec(
+            "INSERT INTO webhook_log (at, incident_id, action, target, reason, "
+            "moderator, status, error) VALUES (?,?,?,?,?,?,?,?)",
+            (time.time(), incident_id or "", action or "", target or "",
+             (reason or "")[:200], moderator or "", int(status or 0),
+             (error or "")[:200]))
+
+    def webhook_log(self, limit: int = 50, incident_id: str = "") -> list[dict]:
+        if incident_id:
+            return [dict(r) for r in self._query(
+                "SELECT * FROM webhook_log WHERE incident_id=? ORDER BY at DESC",
+                (incident_id,))]
+        return [dict(r) for r in self._query(
+            "SELECT * FROM webhook_log ORDER BY at DESC LIMIT ?", (limit,))]
 
     # ---------------- when this server came and went ----------------
     def note_service_event(self, event: str, pid: int = 0,

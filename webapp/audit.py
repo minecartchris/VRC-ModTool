@@ -203,16 +203,23 @@ class AuditWatcher:
             created = parse_ts(entry.get("created_at"))
             if created <= watermark:
                 continue
-            if self.db.add_pending_action({
-                    "id": entry.get("id"), "group_id": self.group_id,
-                    "action": action,
-                    "actor_id": entry.get("actorId", ""),
-                    "actor_name": entry.get("actorDisplayName", ""),
-                    "target_id": entry.get("targetId", ""),
-                    "target_name": target_name(entry),
-                    "location": (entry.get("data") or {}).get("location", ""),
-                    "created_at": created}):
+            queued = {
+                "id": entry.get("id"), "group_id": self.group_id,
+                "action": action,
+                "actor_id": entry.get("actorId", ""),
+                "actor_name": entry.get("actorDisplayName", ""),
+                "target_id": entry.get("targetId", ""),
+                "target_name": target_name(entry),
+                "location": (entry.get("data") or {}).get("location", ""),
+                "created_at": created}
+            if self.db.add_pending_action(queued):
                 added += 1
+                # The kick happened whether or not anybody ever says why, so
+                # the log entry exists from now. The prompt fills in the
+                # reason later; until then it reads as a kick with no reason
+                # given, which is the truth. Previously a prompt that timed
+                # out or was dismissed took the whole kick with it.
+                self._record_unreasoned(queued)
 
         self.last_ok = time.time()
         self.last_error = ""
@@ -336,6 +343,35 @@ class AuditWatcher:
         known.update({r["user_id"]: r["name"]
                       for r in self.db.known_users() if r.get("name")})
         return known
+
+    def _record_unreasoned(self, queued: dict) -> None:
+        """File the kick or warn straight away, with no reason on it yet.
+
+        Deliberately silent: no Discord post, no age check. Those belong to
+        the moment a moderator says why, and announcing twice would be worse
+        than announcing late.
+        """
+        log_id = f"aud-{queued['id']}"[:64]
+        if not queued.get("id") or self.db.get_incident(log_id):
+            return
+        world_id, _, instance_id = (queued.get("location") or "").partition(":")
+        try:
+            self.db.upsert_incident({
+                "id": log_id, "created_at": queued["created_at"],
+                "trigger": queued["action"],          # no reason yet
+                "transcript": [], "world_name": "",
+                "world_id": world_id, "instance_id": instance_id,
+                "players": [{"name": queued.get("target_name", ""),
+                             "user_id": queued.get("target_id", "")}],
+                "clip_path": "", "screenshot_path": "", "notes": "",
+                "status": "reported",
+                "reported_by": queued.get("actor_name", ""),
+                "reported_by_id": queued.get("actor_id", ""),
+                "filed_by": "", "filed_by_id": "",
+                "origin": "vrchat-audit",
+            })
+        except Exception as e:
+            print(f"[audit] could not file {log_id}: {e}", flush=True)
 
     def _record_ban(self, entry: dict, created: float, known: dict) -> bool:
         """Write one audit ban into the log. False if it was already there.

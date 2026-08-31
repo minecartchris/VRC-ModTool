@@ -576,10 +576,23 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         # Filed already? Then this is a repeat submit, and everything below —
         # the age check, the Discord post — would happen a second time too.
         # One choke point for both callers.
+        #
+        # The exception is a kick the audit watcher filed the moment it saw
+        # it, which carries no reason yet. That is not a repeat, it is the
+        # other half arriving: the reason lands on the existing row and the
+        # side effects run exactly once, here, now that there is something to
+        # announce.
         if log_id:
             existing = database.get_incident(log_id)
             if existing and not existing["deleted"]:
-                return existing
+                if _log_reason(existing) or not reason.strip():
+                    return existing
+                when = existing["created_at"] or when
+                world_id = world_id or existing["world_id"]
+                instance_id = instance_id or existing["instance_id"]
+                targets = existing["players"] or targets
+                moderator = existing["reported_by"] or moderator
+                moderator_id = existing["reported_by_id"] or moderator_id
 
         when = when or time.time()
         incident = {
@@ -628,7 +641,9 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                      timestamp=datetime.fromtimestamp(
                          when, tz=timezone.utc).isoformat(),
                      targets=[{**t, "link": discord.profile_url(
-                         t.get("user_id", ""))} for t in targets])
+                         t.get("user_id", ""))} for t in targets],
+                     record=database.note_webhook,
+                     incident_id=incident["id"])
         return incident
 
     def reason_chips(user_id: str) -> list[str]:
@@ -1519,9 +1534,18 @@ def _log_action(inc: dict) -> str:
 
 
 def _log_reason(inc: dict) -> str:
+    """The reason, or "" for a kick nobody has explained yet.
+
+    A bare "Kick" is the audit watcher's record of something that happened
+    with no reason attached. Returning the trigger itself there would read as
+    a reason of "Kick" on the page, and — worse — would make the code that
+    fills reasons in believe there was already one.
+    """
     trigger = (inc.get("trigger") or "").strip()
     _, dash, rest = trigger.partition("—")
-    return (rest if dash else trigger).strip()
+    if not dash:
+        return "" if trigger in _LOG_ACTIONS else trigger
+    return rest.strip()
 
 
 def _instance_group(instance_id: str) -> str:
