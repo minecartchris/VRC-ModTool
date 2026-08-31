@@ -13,6 +13,7 @@ import atexit
 import os
 import re
 import secrets
+import signal
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -97,9 +98,29 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     @asynccontextmanager
     async def lifespan(_app):
-        # Starlette dropped add_event_handler/on_event; this is the supported
-        # hook, and the only one that runs inside uvicorn's SIGTERM path.
+        # Write the stop the moment the signal lands, not at the end of the
+        # shutdown. A container reboot gave us thirteen seconds after uvicorn
+        # gave up on 174 hanging connections, and the row still never got
+        # written - by then the shutdown had its own problems. Chained to
+        # uvicorn's handler rather than replacing it, and installed here
+        # because uvicorn sets its own only once it starts serving.
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            try:
+                previous = signal.getsignal(signum)
+            except (ValueError, OSError):
+                continue
+
+            def first(sig, frame, _previous=previous):
+                _note_stop()
+                if callable(_previous):
+                    _previous(sig, frame)
+
+            try:
+                signal.signal(signum, first)
+            except (ValueError, OSError):
+                pass            # not the main thread; the hooks below still run
         yield
+        # Belt and braces for the ways out that never see a signal.
         _note_stop()
 
     app = FastAPI(title="VRChat Mod Suite", docs_url=None, redoc_url=None,
