@@ -1,0 +1,25 @@
+# Keep the build context small and the image free of things that must never
+# ship: local databases, keys, and the Android toolchain.
+.git
+.venv
+__pycache__/
+*.pyc
+dist/
+build/
+quest-agent/
+docs/
+tools/
+*.db
+*.db-wal
+*.db-shm
+incident_shots/
+web_config.json
+config.json
+agent_config.json
+agent_baked.py
+*.jks
+*.keystore
+keystore.properties
+local.properties
+release.local.json
+node_modules/
