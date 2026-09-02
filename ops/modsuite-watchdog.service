@@ -1,0 +1,15 @@
+[Unit]
+# Runs on the Proxmox HOST, not in the container — the whole point is to be
+# awake for the part the container cannot witness: its own reboot.
+Description=Watch the mod suite container from outside it
+After=network.target pve-cluster.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/modsuite-watchdog/watchdog.py --ct 101 --host 192.168.1.50
+Restart=always
+RestartSec=10
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

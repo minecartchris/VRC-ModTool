@@ -1,0 +1,55 @@
+# The mod suite, as two containers: the tool, and the status page that watches
+# it. They are separate on purpose — a monitor sharing a process with the thing
+# it monitors goes dark exactly when you need it.
+services:
+  modsuite:
+    build: .
+    image: modsuite:latest
+    container_name: modsuite
+    restart: unless-stopped
+    # PID 1 in a container reaps nothing and, without an init, a stray child
+    # can outlive the shutdown. `init: true` puts a real one in front.
+    init: true
+    # uvicorn is told to give up on open connections after ten seconds; this
+    # leaves room for that to finish rather than SIGKILLing it mid-write.
+    stop_grace_period: 30s
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/data
+      - ./config:/config
+    environment:
+      # Logs and the Mod Log's "today" both read better in local time.
+      TZ: ${TZ:-America/Chicago}
+
+  # Optional. Reads the same database read-only and answers on its own port,
+  # so there is still something to ask when the tool is down.
+  monitor:
+    build: .
+    image: modsuite:latest
+    container_name: modsuite-monitor
+    restart: unless-stopped
+    init: true
+    command: ["python", "ops/monitor_web.py", "--port", "8090", "--host", "0.0.0.0"]
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./data:/data:ro
+      - ./config:/config:ro
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      # It checks the tool over the network here, not over localhost, because
+      # in Docker they are different containers.
+      MODSUITE_URL: http://modsuite:8787
+    # Its own check. The image's healthcheck probes 8787, which this container
+    # does not serve - inherited unchanged, Docker calls the monitor unhealthy
+    # forever and the one container meant to tell you what is wrong is the one
+    # that looks broken.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/healthz"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    depends_on:
+      - modsuite

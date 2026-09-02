@@ -98,6 +98,24 @@ def page(data: dict) -> str:
                          "{:,}".format(d["audit_bans"]),
                          "read %s ago" % ht(now - d["audit_watermark"]))
                    + "</section>")
+        starts = d.get("starts_24h", 0)
+        unclean = d.get("unclean_24h", 0)
+        restart_note = ("%d after an unclean stop" % unclean if unclean
+                        else "all clean" if starts else "")
+        rows_html = (row("Restarts", str(starts),
+                         "in 24h - " + restart_note if restart_note else "in 24h")
+                     + row("Last start", ht(now - d["last_start"]) + " ago"
+                           if d.get("last_start") else "unknown", ""))
+        events = "".join(
+            "<li>%s &middot; %s%s</li>"
+            % (time.strftime("%m-%d %H:%M", time.localtime(e["at"])),
+               html.escape(e["event"]),
+               " &middot; " + html.escape(e["detail"] or "") if e["detail"] else "")
+            for e in d.get("events", [])[:6])
+        box.append("<section><h2>Starts &amp; stops</h2>" + rows_html
+                   + ('<ul class="errs" style="color:var(--dim)">%s</ul>' % events
+                      if events else "")
+                   + "</section>")
         box.append("<section><h2>Live</h2>"
                    + row("Agents reporting", str(d["agents_live"]),
                          "of %d known" % d["agents"])

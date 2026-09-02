@@ -9,9 +9,14 @@ Two ways in:
   * desktop clients — a shared token on /api/sync/* (no VRChat login needed)
 """
 
+import atexit
+import os
 import re
 import secrets
+import signal
+import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -55,7 +60,71 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
     sessions = SessionManager(database, cfg)
     started_at = time.time()
 
-    app = FastAPI(title="VRChat Mod Suite", docs_url=None, redoc_url=None)
+    # Write down that we started, and whether the last run ended tidily.
+    # "It keeps crashing" is only answerable if something recorded the going
+    # as well as the coming: a start with no stop before it means the last
+    # run was killed rather than asked to leave.
+    previous = database.last_service_event()
+    unclean = bool(previous and previous["event"] == "start")
+    if unclean:
+        gap = time.time() - (previous["at"] or 0)
+        print(f"[boot] previous run (pid {previous['pid']}) never logged a "
+              f"shutdown - it was killed, or the machine went down. It had "
+              f"been up {int(gap // 3600)}h{int(gap % 3600 // 60):02d}m.",
+              flush=True)
+    database.note_service_event(
+        "start", os.getpid(),
+        "after an unclean stop" if unclean else "after a clean stop")
+    print(f"[boot] started, pid {os.getpid()}", flush=True)
+
+    stopped = threading.Event()
+
+    def _note_stop() -> None:
+        # Once, whichever hook gets there first.
+        if stopped.is_set():
+            return
+        stopped.set()
+        try:
+            database.note_service_event("stop", os.getpid(), "shutting down")
+            print("[boot] shutting down cleanly", flush=True)
+        except Exception:
+            pass                # a failure here must not block the exit
+
+    # The lifespan hook, not atexit: uvicorn's SIGTERM path tears the loop
+    # down and exits without atexit ever running, which is how the first
+    # attempt at this recorded starts and never stops. atexit stays as a
+    # backstop for the ways out that do unwind normally.
+    atexit.register(_note_stop)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        # Write the stop the moment the signal lands, not at the end of the
+        # shutdown. A container reboot gave us thirteen seconds after uvicorn
+        # gave up on 174 hanging connections, and the row still never got
+        # written - by then the shutdown had its own problems. Chained to
+        # uvicorn's handler rather than replacing it, and installed here
+        # because uvicorn sets its own only once it starts serving.
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            try:
+                previous = signal.getsignal(signum)
+            except (ValueError, OSError):
+                continue
+
+            def first(sig, frame, _previous=previous):
+                _note_stop()
+                if callable(_previous):
+                    _previous(sig, frame)
+
+            try:
+                signal.signal(signum, first)
+            except (ValueError, OSError):
+                pass            # not the main thread; the hooks below still run
+        yield
+        # Belt and braces for the ways out that never see a signal.
+        _note_stop()
+
+    app = FastAPI(title="VRChat Mod Suite", docs_url=None, redoc_url=None,
+                  lifespan=lifespan)
     app.state.cfg = cfg
     app.state.db = database
     app.state.sessions = sessions
@@ -155,6 +224,26 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             database.note_instance_count(location, info.get("n_users", 0) or 0,
                                          info.get("capacity", 0) or 0)
         return database.instance_counts(COUNT_MAX_AGE)
+
+    def signed_in_now() -> list:
+        """Everyone with a session, and whether we can act as them in VRChat.
+
+        The second half is the one that matters operationally: the invite
+        queue runs on borrowed VRChat sessions, and a moderator who is signed
+        in here but whose client this process cannot use is no help to it.
+        """
+        with sessions._lock:                          # noqa: SLF001
+            clients = list(sessions._clients.values())  # noqa: SLF001
+        usable = set()
+        for api in clients:
+            who = getattr(api, "user", None)
+            if isinstance(who, dict) and who.get("id"):
+                usable.add(who["id"])
+        rows = []
+        for s in database.active_sessions():
+            rows.append({**s, "vrchat": s["user_id"] in usable,
+                         "admin": is_admin(s["user_id"])})
+        return rows
 
     def pending_rows(actor_id: str = "", include_done: bool = False) -> list:
         """The prompt list, with anything too old dropped on the way past.
@@ -423,7 +512,8 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     # ---------------- age checks ----------------
     @app.get("/age-checks", response_class=HTMLResponse)
-    def age_checks_page(request: Request, verdict: str = "", q: str = ""):
+    def age_checks_page(request: Request, verdict: str = "", q: str = "",
+                        all: str = ""):
         sess = require(request)
         rows = database.all_age_checks()
         if verdict:
@@ -432,11 +522,21 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             needle = q.lower()
             rows = [c for c in rows
                     if needle in f"{c['name']} {c['user_id']}".lower()]
+        # Eleven thousand rows is nine megabytes of HTML, which is not a page
+        # so much as a download - it is why this looked like the age checks
+        # had disappeared. Newest first, capped, and a search that still
+        # reaches all of them.
+        total = len(rows)
+        limit = 0 if all == "1" else AGE_CHECK_PAGE
+        if limit:
+            rows = rows[:limit]
         # The same instance Screening would show them, so the name suggestions
         # are the people they can actually see.
         current, _ = _pick_instance(shown_rosters(), sess["user_id"],
                                     "", publisher)
         return page(request, "age_checks.html", session=sess, checks=rows,
+                    total_checks=total, showing_all=bool(all == "1"),
+                    page_size=AGE_CHECK_PAGE,
                     verdict=verdict, q=q,
                     roster=current["players"] if current else [],
                     current=current, verdicts=agecheck.VERDICTS,
@@ -480,6 +580,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
     def file_moderation_log(*, action: str, reason: str, targets: list[dict],
                             moderator: str, moderator_id: str = "",
+                            filed_by: str = "", filed_by_id: str = "",
                             when: float | None = None, world_id: str = "",
                             instance_id: str = "", origin: str = "web",
                             age_hint: int | None = None,
@@ -495,10 +596,23 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
         # Filed already? Then this is a repeat submit, and everything below —
         # the age check, the Discord post — would happen a second time too.
         # One choke point for both callers.
+        #
+        # The exception is a kick the audit watcher filed the moment it saw
+        # it, which carries no reason yet. That is not a repeat, it is the
+        # other half arriving: the reason lands on the existing row and the
+        # side effects run exactly once, here, now that there is something to
+        # announce.
         if log_id:
             existing = database.get_incident(log_id)
             if existing and not existing["deleted"]:
-                return existing
+                if _log_reason(existing) or not reason.strip():
+                    return existing
+                when = existing["created_at"] or when
+                world_id = world_id or existing["world_id"]
+                instance_id = instance_id or existing["instance_id"]
+                targets = existing["players"] or targets
+                moderator = existing["reported_by"] or moderator
+                moderator_id = existing["reported_by_id"] or moderator_id
 
         when = when or time.time()
         incident = {
@@ -509,7 +623,13 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             "players": targets,
             "clip_path": "", "screenshot_path": "", "notes": "",
             "status": "reported", "reported_by": moderator,
-            "reported_by_id": moderator_id, "origin": origin,
+            "reported_by_id": moderator_id,
+            # Who typed it, which is not always who did it: any moderator can
+            # answer somebody else's prompt, and then the log carries one
+            # name as the actor and another as the author.
+            "filed_by": filed_by or moderator,
+            "filed_by_id": filed_by_id or moderator_id,
+            "origin": origin,
         }
         database.upsert_incident(incident)
 
@@ -541,7 +661,9 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
                      timestamp=datetime.fromtimestamp(
                          when, tz=timezone.utc).isoformat(),
                      targets=[{**t, "link": discord.profile_url(
-                         t.get("user_id", ""))} for t in targets])
+                         t.get("user_id", ""))} for t in targets],
+                     record=database.note_webhook,
+                     incident_id=incident["id"])
         return incident
 
     def reason_chips(user_id: str) -> list[str]:
@@ -747,6 +869,7 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             # the reason in - they are often different people.
             moderator=action["actor_name"] or sess["name"],
             moderator_id=action["actor_id"],
+            filed_by=sess["name"], filed_by_id=sess["user_id"],
             when=action["created_at"] or time.time(),
             world_id=world_id, instance_id=instance_id, origin="vrchat-audit",
             age_hint=int(bare) if bare.isdigit() and 1 <= int(bare) <= 120
@@ -1082,6 +1205,9 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
             candidates=[u for u in database.known_users()
                         if u["user_id"] not in {a["user_id"] for a in admins}],
             keys=database.agent_keys(),
+            signed_in=signed_in_now(),
+            checks_state=database.age_check_counts(),
+            cleared_result=request.query_params.get("cleared", ""),
             allowed=database.allowed_users(),
             allowed_result=request.query_params.get("allowed", ""),
             queue=database.group_actions(limit=40),
@@ -1176,6 +1302,24 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 
         database.allow_user(uid, name, note.strip()[:200], sess["name"])
         return RedirectResponse("/admin?allowed=added", status_code=303)
+
+    @app.post("/admin/clear-checks")
+    def admin_clear_checks(request: Request, confirm: str = Form("")):
+        """Send every player back to unchecked, keeping who did the screening.
+
+        Not a delete: the rows stay and the leaderboard still counts them.
+        What is cleared is their say over whether somebody is verified, so
+        Screening starts from a clean slate after a purge or a rule change.
+        """
+        sess = require(request)
+        if not is_admin(sess["user_id"]):
+            return RedirectResponse("/admin", status_code=303)
+        if confirm != "clear":
+            return RedirectResponse("/admin?cleared=cancelled", status_code=303)
+        count = database.clear_age_checks(sess["name"])
+        print(f"[admin] {sess['name']} ({sess['user_id']}) cleared {count} "
+              f"age checks; the leaderboard keeps them", flush=True)
+        return RedirectResponse(f"/admin?cleared={count}", status_code=303)
 
     # ---------------- agent pairing ----------------
     # The agent asks for a code, shows it with a link, and polls. A moderator
@@ -1407,6 +1551,10 @@ def create_app(cfg: dict | None = None, database: "db.Database | None" = None):
 #: How long a headcount is worth trusting, and how many rooms to look up in
 #: one render. Both small: the number is only useful while it is current, and
 #: a page load should not turn into a dozen API calls.
+#: How many age checks one page shows. The whole table is eleven thousand
+#: rows and climbing; rendering it all is how the page became unusable.
+AGE_CHECK_PAGE = 300
+
 COUNT_MAX_AGE = 60.0
 COUNT_MAX_LOOKUPS = 4
 
@@ -1427,9 +1575,18 @@ def _log_action(inc: dict) -> str:
 
 
 def _log_reason(inc: dict) -> str:
+    """The reason, or "" for a kick nobody has explained yet.
+
+    A bare "Kick" is the audit watcher's record of something that happened
+    with no reason attached. Returning the trigger itself there would read as
+    a reason of "Kick" on the page, and — worse — would make the code that
+    fills reasons in believe there was already one.
+    """
     trigger = (inc.get("trigger") or "").strip()
     _, dash, rest = trigger.partition("—")
-    return (rest if dash else trigger).strip()
+    if not dash:
+        return "" if trigger in _LOG_ACTIONS else trigger
+    return rest.strip()
 
 
 def _instance_group(instance_id: str) -> str:

@@ -87,7 +87,13 @@ def main() -> None:
         supervise(host, port)
     else:
         print(f"Mod Suite web on http://{host}:{port}", flush=True)
-        uvicorn.run(create_app(cfg), host=host, port=port)
+        # Stop waiting for open connections after ten seconds. Every page in
+        # this tool polls /api/state, so at any moment there are browsers
+        # holding a connection open; without a cap, "Waiting for connections
+        # to close" is how a shutdown starts and a SIGKILL is how it ends,
+        # a minute later, mid-write.
+        uvicorn.run(create_app(cfg), host=host, port=port,
+                    timeout_graceful_shutdown=10)
 
 
 # Files worth restarting for, and trees that must never be walked: the Vosk

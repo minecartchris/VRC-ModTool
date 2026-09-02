@@ -55,7 +55,8 @@ def build_embed(*, action: str, moderator: str, reason: str, timestamp: str,
 
 
 def post(cfg: dict, *, action: str, moderator: str, reason: str,
-         timestamp: str, targets: list[dict]) -> None:
+         timestamp: str, targets: list[dict], record=None,
+         incident_id: str = "") -> None:
     """Fire the webhooks in the background.
 
     Never raises and never blocks the request: a moderator's reason is already
@@ -77,12 +78,25 @@ def post(cfg: dict, *, action: str, moderator: str, reason: str,
     embed = build_embed(action=action, moderator=moderator, reason=reason,
                         timestamp=timestamp, targets=targets)
 
+    who = ", ".join((t.get("name") or "?") for t in targets)[:120]
+
+    def note(status: int, error: str = "") -> None:
+        # Written whatever happens, so "the channel shows two, we sent one"
+        # is a question with an answer.
+        if record:
+            try:
+                record(incident_id, action, who, reason, moderator,
+                       status, error)
+            except Exception:
+                pass
+
     def send() -> None:
         if url:
             try:
-                requests.post(url, json={"embeds": [embed]}, timeout=15)
-            except requests.RequestException:
-                pass
+                r = requests.post(url, json={"embeds": [embed]}, timeout=15)
+                note(r.status_code)
+            except requests.RequestException as e:
+                note(0, str(e)[:180])
         # Second channel for age removals, matching route.js.
         if overaged_url and "overage" in (reason or "").lower():
             links = "\n".join(

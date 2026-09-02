@@ -10,6 +10,10 @@ and refuse to say who.
 So this gets as close as the client allows, using VRChat's own documented
 launch options:
 
+    (started through VRChat's own launch.exe — running VRChat.exe directly
+    puts the client in offline testing mode, where it cannot travel to any
+    online world and so has no instance to report)
+
     --no-vr                 desktop mode, so SteamVR never starts
     --fps=5                 the real lever; the frame cap is what costs GPU
     --process-priority=-2   idle, so it yields to whatever you are doing
@@ -54,7 +58,14 @@ QUIET_AFFINITY = "3"
 
 
 def find_vrchat() -> Path | None:
-    """Locate VRChat.exe via Steam, or None if we cannot."""
+    """Locate VRChat's launcher via Steam, or None if we cannot.
+
+    `launch.exe`, not `VRChat.exe`. Starting the game binary directly drops
+    the client into offline testing mode — it comes up, it just refuses to
+    travel to online worlds, so there is no instance and no roster. The
+    launcher is what sets up a normal online session, and it forwards our
+    arguments through to the game.
+    """
     candidates = []
     try:
         import winreg
@@ -91,10 +102,28 @@ def find_vrchat() -> Path | None:
             pass
 
     for lib in libraries:
-        exe = lib / "steamapps" / "common" / "VRChat" / "VRChat.exe"
-        if exe.is_file():
-            return exe
+        folder = lib / "steamapps" / "common" / "VRChat"
+        for name in ("launch.exe", "VRChat.exe"):
+            exe = folder / name
+            if exe.is_file():
+                return exe
     return None
+
+
+def game_running() -> bool:
+    """Whether VRChat itself is up.
+
+    Needed because launch.exe hands off to VRChat.exe and exits within
+    seconds: waiting on the launcher's own process would read as "VRChat
+    closed" the moment it started.
+    """
+    try:
+        out = subprocess.run(["tasklist", "/fi", "imagename eq VRChat.exe",
+                              "/nh"], capture_output=True, text=True,
+                             timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return True          # cannot tell; assume it is fine rather than quit
+    return "VRChat.exe" in out
 
 
 def launch_vrchat(exe: Path, args) -> subprocess.Popen:
@@ -167,7 +196,8 @@ def main() -> int:
     ap.add_argument("--affinity", default=QUIET_AFFINITY,
                     help="hex CPU mask, e.g. 3 for two threads, FF for eight; "
                          "empty to leave alone")
-    ap.add_argument("--vrchat", default="", help="path to VRChat.exe")
+    ap.add_argument("--vrchat", default="",
+                    help="path to VRChat's launch.exe (not VRChat.exe)")
     ap.add_argument("--no-launch", action="store_true",
                     help="don't start VRChat; just run the agent beside the "
                          "client you already have open")
@@ -188,8 +218,8 @@ def main() -> int:
     if not args.no_launch:
         vrchat = Path(args.vrchat) if args.vrchat else find_vrchat()
         if not vrchat or not vrchat.is_file():
-            print("Couldn't find VRChat.exe. Pass --vrchat "
-                  r'"D:\SteamLibrary\steamapps\common\VRChat\VRChat.exe"')
+            print("Couldn't find VRChat. Pass --vrchat "
+                  r'"D:\SteamLibrary\steamapps\common\VRChat\launch.exe"')
             return 1
 
     print("Roster host — VRChat runs minimised and throttled, not headless.")
@@ -221,7 +251,7 @@ def main() -> int:
                 print(f"\nThe agent exited ({agent.returncode}). Restarting it.")
                 time.sleep(5)
                 agent = start_agent(args)
-            if client and client.poll() is not None:
+            if client and not game_running():
                 if args.restart:
                     print("\nVRChat exited. Relaunching.")
                     client = launch_vrchat(vrchat, args)
@@ -234,18 +264,25 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
-        for proc, what in ((agent, "agent"), (client, "VRChat")):
-            if proc and proc.poll() is None:
-                print(f"  closing {what}")
-                try:
-                    proc.send_signal(signal.CTRL_BREAK_EVENT
-                                     if what == "agent" else signal.SIGTERM)
-                except Exception:
-                    pass
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+        if agent and agent.poll() is None:
+            print("  closing agent")
+            try:
+                agent.send_signal(signal.CTRL_BREAK_EVENT)
+            except Exception:
+                pass
+            try:
+                agent.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                agent.kill()
+        if client and game_running():
+            # The launcher process itself exited long ago, so this has to ask
+            # Windows to close the game by name.
+            print("  closing VRChat")
+            try:
+                subprocess.run(["taskkill", "/im", "VRChat.exe"],
+                               capture_output=True, timeout=20)
+            except (OSError, subprocess.SubprocessError):
+                pass
     return 0
 
 

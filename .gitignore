@@ -66,3 +66,8 @@ quest-agent/keystore.properties
 quest-agent/release.local.json
 quest-agent/upload.jks
 quest-agent/ovr-platform-util.exe
+
+# Docker bind mounts: the live database and the config with its secrets.
+# Compose creates these in the repo root, so they must never be committable.
+/data/
+/config/

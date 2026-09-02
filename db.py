@@ -277,6 +277,40 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     PRIMARY KEY (user_id, name)
 );
 
+-- Every announcement this server sent, and what Discord said about it.
+--
+-- The channel had kick logs appearing twice and no way to tell whether this
+-- tool sent both. One row per attempt answers that: if the channel shows two
+-- messages and this shows one send, the second came from somewhere else.
+CREATE TABLE IF NOT EXISTS webhook_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          REAL,
+    incident_id TEXT,
+    action      TEXT,
+    target      TEXT,
+    reason      TEXT,
+    moderator   TEXT,
+    status      INTEGER,     -- HTTP status, or 0 if it never got that far
+    error       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_webhook_log_at ON webhook_log(at);
+
+-- One row per time this server started or stopped.
+--
+-- Written so the next "why did it go down?" is answered by looking rather
+-- than by trawling. A start with no matching stop before it means the last
+-- run ended abruptly - killed, out of memory, or the box went away - and
+-- that is exactly the distinction a journal full of ordinary request lines
+-- does not make obvious.
+CREATE TABLE IF NOT EXISTS service_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    at      REAL,
+    event   TEXT,        -- start | stop
+    pid     INTEGER,
+    detail  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_service_log_at ON service_log(at);
+
 -- What VRChat says is in an instance, cached briefly. The agents report who
 -- is in a room; this is the only independent check on whether they are in the
 -- room they think they are. Short-lived on purpose: a headcount minutes old
@@ -315,6 +349,13 @@ _ADDED_COLUMNS = {
         # and "show me my own bans" has to keep meaning the same person.
         # Empty on rows filed before this existed; those fall back to the name.
         "reported_by_id": "TEXT",
+        # Who pressed the button, as distinct from who VRChat says did the
+        # kick. Any moderator can answer another's prompt, so a log can
+        # truthfully name one person as the actor and a different one as the
+        # person who wrote it down - and "why is my name on a kick I never
+        # logged?" has no answer unless both are kept.
+        "filed_by": "TEXT",
+        "filed_by_id": "TEXT",
         "origin": "TEXT",
     },
     "web_sessions": {
@@ -324,6 +365,13 @@ _ADDED_COLUMNS = {
         # Prompts that timed out. Added after the first release, so an old
         # database gets the column rather than a rebuild.
         "expired_at": "REAL",
+    },
+    "age_checks": {
+        # Cleared, not deleted. A cleared check no longer says anything about
+        # whether that player is verified — the point of clearing is that
+        # everybody goes back to unchecked — but the moderator who did the
+        # work still did it, so the leaderboard keeps counting it.
+        "cleared_at": "REAL",
     },
     "rosters": {
         "seen_at": "REAL",
@@ -336,12 +384,13 @@ _ADDED_COLUMNS = {
 _INCIDENT_FIELDS = (
     "created_at", "trigger", "transcript", "world_name", "world_id",
     "instance_id", "players", "clip_path", "screenshot_path", "notes",
-    "status", "reported_by", "reported_by_id", "origin", "deleted",
+    "status", "reported_by", "reported_by_id", "filed_by", "filed_by_id",
+    "origin", "deleted",
 )
 _AGE_CHECK_FIELDS = (
     "user_id", "name", "verdict", "reported_age", "world_name", "world_id",
     "instance_id", "incident_id", "checked_by", "checked_by_id", "note",
-    "source", "created_at", "deleted",
+    "source", "created_at", "cleared_at", "deleted",
 )
 
 
@@ -455,6 +504,8 @@ class Database:
             "status": inc.get("status", "new") or "new",
             "reported_by": inc.get("reported_by", "") or "",
             "reported_by_id": inc.get("reported_by_id", "") or "",
+            "filed_by": inc.get("filed_by", "") or "",
+            "filed_by_id": inc.get("filed_by_id", "") or "",
             "origin": inc.get("origin", "") or "",
             "deleted": int(inc.get("deleted", 0) or 0),
         }
@@ -473,6 +524,8 @@ class Database:
             "notes": r["notes"] or "", "status": r["status"] or "new",
             "reported_by": r["reported_by"] or "",
             "reported_by_id": r["reported_by_id"] or "",
+            "filed_by": r["filed_by"] or "",
+            "filed_by_id": r["filed_by_id"] or "",
             "origin": r["origin"] or "",
             "updated_at": r["updated_at"] or 0.0,
             "deleted": bool(r["deleted"]),
@@ -502,6 +555,11 @@ class Database:
                              (check["id"],))
         if existing and not check.get("created_at"):
             row["created_at"] = existing["created_at"]   # keep, don't re-stamp
+        if existing and existing["cleared_at"] and not check.get("cleared_at"):
+            # A desktop client that predates this column pushes records
+            # without it. Taking that at face value would quietly un-clear
+            # everything the next time it synced.
+            row["cleared_at"] = existing["cleared_at"]
         if existing and not self._differs(existing, row, _AGE_CHECK_FIELDS):
             return False
         row["id"] = check["id"]
@@ -542,6 +600,7 @@ class Database:
             "note": c.get("note", "") or "",
             "source": c.get("source", "") or "",
             "created_at": c.get("created_at") or time.time(),
+            "cleared_at": c.get("cleared_at") or None,
             "deleted": int(c.get("deleted", 0) or 0),
         }
 
@@ -559,8 +618,35 @@ class Database:
             "checked_by_id": r["checked_by_id"] or "",
             "note": r["note"] or "", "source": r["source"] or "",
             "created_at": r["created_at"], "updated_at": r["updated_at"] or 0.0,
+            "cleared_at": r["cleared_at"] or 0.0,
             "deleted": bool(r["deleted"]),
         }
+
+    def clear_age_checks(self, by: str = "") -> int:
+        """Send everybody back to unchecked, without losing who did the work.
+
+        The rows stay, and the leaderboard keeps counting them — what goes is
+        their say over whether a player is currently verified. Screening
+        starts from scratch; the record of who screened whom does not.
+        """
+        now = time.time()
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE age_checks SET cleared_at=?, updated_at=? "
+                "WHERE cleared_at IS NULL AND COALESCE(deleted, 0) = 0",
+                (now, now))
+            self.conn.commit()
+            return cur.rowcount
+
+    def age_check_counts(self) -> dict:
+        """How many are live, and how many have been cleared."""
+        row = self._one(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN cleared_at IS NOT NULL THEN 1 ELSE 0 END) AS cleared "
+            "FROM age_checks WHERE COALESCE(deleted, 0) = 0")
+        total = int(row["total"] or 0) if row else 0
+        cleared = int(row["cleared"] or 0) if row else 0
+        return {"total": total, "cleared": cleared, "live": total - cleared}
 
     # ---------------- screening cache ----------------
     def all_users(self) -> dict:
@@ -670,6 +756,17 @@ class Database:
     def delete_session(self, token_hash: str) -> None:
         self._exec("DELETE FROM web_sessions WHERE token=?", (token_hash,))
 
+    def active_sessions(self) -> list[dict]:
+        """Who is signed in right now, newest first."""
+        rows = self._query(
+            "SELECT user_id, name, groups, created_at, expires_at "
+            "FROM web_sessions WHERE expires_at > ? ORDER BY created_at DESC",
+            (time.time(),))
+        return [{"user_id": r["user_id"] or "", "name": r["name"] or "",
+                 "groups": json.loads(r["groups"] or "[]"),
+                 "created_at": r["created_at"] or 0.0,
+                 "expires_at": r["expires_at"] or 0.0} for r in rows]
+
     def purge_expired_sessions(self) -> None:
         self._exec("DELETE FROM web_sessions WHERE expires_at < ?",
                    (time.time(),))
@@ -774,6 +871,40 @@ class Database:
         r = self._one("SELECT MAX(created_at) AS t FROM pending_actions "
                       "WHERE group_id=?", (group_id,))
         return (r["t"] if r and r["t"] else 0.0)
+
+    # ---------------- what we told Discord ----------------
+    def note_webhook(self, incident_id: str, action: str, target: str,
+                     reason: str, moderator: str, status: int = 0,
+                     error: str = "") -> None:
+        self._exec(
+            "INSERT INTO webhook_log (at, incident_id, action, target, reason, "
+            "moderator, status, error) VALUES (?,?,?,?,?,?,?,?)",
+            (time.time(), incident_id or "", action or "", target or "",
+             (reason or "")[:200], moderator or "", int(status or 0),
+             (error or "")[:200]))
+
+    def webhook_log(self, limit: int = 50, incident_id: str = "") -> list[dict]:
+        if incident_id:
+            return [dict(r) for r in self._query(
+                "SELECT * FROM webhook_log WHERE incident_id=? ORDER BY at DESC",
+                (incident_id,))]
+        return [dict(r) for r in self._query(
+            "SELECT * FROM webhook_log ORDER BY at DESC LIMIT ?", (limit,))]
+
+    # ---------------- when this server came and went ----------------
+    def note_service_event(self, event: str, pid: int = 0,
+                           detail: str = "") -> None:
+        self._exec("INSERT INTO service_log (at, event, pid, detail) "
+                   "VALUES (?,?,?,?)",
+                   (time.time(), event, int(pid or 0), detail or ""))
+
+    def service_events(self, limit: int = 40) -> list[dict]:
+        return [dict(r) for r in self._query(
+            "SELECT * FROM service_log ORDER BY at DESC LIMIT ?", (limit,))]
+
+    def last_service_event(self) -> dict | None:
+        rows = self.service_events(1)
+        return rows[0] if rows else None
 
     # ---------------- what VRChat says is in a room ----------------
     def note_instance_count(self, location: str, n_users: int,

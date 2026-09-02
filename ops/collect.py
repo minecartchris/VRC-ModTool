@@ -180,9 +180,12 @@ def database() -> dict:
                                            "WHERE COALESCE(deleted,0)=0 AND created_at > ?", (day,))
         out["sessions"] = _one(conn, "SELECT COUNT(*) FROM web_sessions "
                                      "WHERE expires_at > ?", (now,))
+        # Expired prompts have stopped asking, so counting them as waiting
+        # turns six into six hundred and makes the number meaningless.
         out["pending_actions"] = _one(
             conn, "SELECT COUNT(*) FROM pending_actions "
-                  "WHERE resolved_at IS NULL AND COALESCE(dismissed,0)=0")
+                  "WHERE resolved_at IS NULL AND COALESCE(dismissed,0)=0 "
+                  "AND expired_at IS NULL")
 
         # Agents: one row per reporter, so "live" is how many are still talking.
         out["agents_live"] = _one(conn, "SELECT COUNT(*) FROM rosters "
@@ -213,6 +216,25 @@ def database() -> dict:
         mark = conn.execute("SELECT value FROM tool_state WHERE key LIKE "
                             "'audit_ban_seen:%' LIMIT 1").fetchone()
         out["audit_watermark"] = float(mark[0]) if mark and mark[0] else 0.0
+
+        # Every start and stop, so "it keeps crashing" can be answered by
+        # looking. A start whose previous event was also a start means the
+        # run before it was killed rather than asked to leave.
+        try:
+            events = [dict(zip(("at", "event", "pid", "detail"), row))
+                      for row in conn.execute(
+                          "SELECT at, event, pid, detail FROM service_log "
+                          "ORDER BY at DESC LIMIT 40")]
+        except sqlite3.Error:
+            events = []
+        out["starts_24h"] = sum(1 for e in events
+                                if e["event"] == "start" and e["at"] > day)
+        out["unclean_24h"] = sum(1 for e in events
+                                 if e["event"] == "start" and e["at"] > day
+                                 and "unclean" in (e["detail"] or ""))
+        out["last_start"] = next((e["at"] for e in events
+                                  if e["event"] == "start"), 0.0)
+        out["events"] = events[:8]
     except sqlite3.Error as e:
         out["error"] = str(e)
     finally:
@@ -303,6 +325,9 @@ def as_text(data: dict) -> str:
             f" last {human_time(data['at'] - d['queue_last_done'])} ago")
         add(f"  Audit     {d['audit_bans']:>7} bans read from VRChat,"
             f" watermark {human_time(data['at'] - d['audit_watermark'])} old")
+        add(f"  Restarts  {d.get('starts_24h', 0):>7} in 24h"
+            f"{', ' + str(d['unclean_24h']) + ' after an unclean stop'
+              if d.get('unclean_24h') else ''}")
 
     if data["errors"]:
         add("")
