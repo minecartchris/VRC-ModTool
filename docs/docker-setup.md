@@ -3,12 +3,11 @@
 Step by step, from a bare Linux host to a working server. About twenty minutes,
 most of it waiting for downloads.
 
-**Status: written and reviewed, not yet built.** Docker Desktop on the
-development machine fails to start (an Inference-manager socket error inside
-Docker Desktop, nothing to do with these files), so the image has not been
-built and run end to end. Everything here follows the deployment that is
-already running under systemd — same command, same environment variables, same
-paths — but treat the first `docker compose up` as the real test.
+**Status: built and run.** The image builds (330 MB), both containers come up
+healthy, the app answers on 8787 and the status page on 8090, the database is
+created in the mounted volume, and `docker compose down` shuts the app down
+cleanly — the run log records the stop, which is the part that had been
+failing under systemd. Verified on Docker 29.1.3.
 
 ## What you need
 
@@ -89,7 +88,7 @@ docker compose ps && docker compose logs -f modsuite
 ```
 
 Healthy looks like `Uvicorn running on http://0.0.0.0:8787` followed by
-`[boot] started, pid 1`. Then:
+`[boot] started, pid 7` (not 1 — `init: true` puts tini in front). Then:
 
 ```bash
 curl -s http://localhost:8787/healthz
@@ -106,6 +105,22 @@ reverse proxy terminating TLS. Once that is up, set `"https_only": true` in the
 config and `docker compose restart modsuite`.
 
 ## Moving an existing server in
+
+If you were sent a `modsuite-migration-*.tar.gz`, that holds the database and
+the config already — skip step 3, and use this instead of the steps below:
+
+```bash
+mkdir -p /opt/modsuite/data /opt/modsuite/config && tar -xzf modsuite-migration-*.tar.gz -C /tmp
+```
+
+```bash
+cp /tmp/modtool.db /opt/modsuite/data/ && cp /tmp/web_config.json /opt/modsuite/config/ && chown -R 10001:10001 /opt/modsuite/data
+```
+
+Then go to step 4. The bundle's `README-FIRST.txt` lists which credentials it
+carries and what to rotate afterwards.
+
+### Or by hand, from a running server
 
 If you already have the systemd deployment, the database moves as a file — but
 copy it while nothing is writing, or take a proper snapshot:
@@ -156,6 +171,19 @@ docker compose exec modsuite python -c "import sqlite3,time; s=sqlite3.connect('
 
 Then copy that file off the host. A backup on the same disk as the original is
 not a backup.
+
+## What the image does not contain
+
+The build context excludes the Vosk speech models. They belong to the desktop
+capture stack, weigh 2.7 GB, and putting them in produced a **10.2 GB image**
+for a web app that is a few hundred kilobytes of Python. Excluded, it is
+330 MB. If you add large assets to the repo later, add them to
+`.dockerignore` or the image will quietly grow again.
+
+Also excluded, and worth knowing why: `*.db`, `web_config.json`, and the
+signing keys. The image must never carry a database or a credential — those
+arrive through the volumes at runtime, which is what lets one image serve
+every host.
 
 ## The status page
 

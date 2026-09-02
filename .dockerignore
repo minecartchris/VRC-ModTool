@@ -2,6 +2,16 @@
 # ship: local databases, keys, and the Android toolchain.
 .git
 .venv
+
+# The speech models are for the desktop capture stack and weigh 2.7 GB. They
+# have no business in a server image - leaving them in built a 10 GB image
+# for a web app that is a few hundred kilobytes of Python.
+vosk-model-*/
+*.zip
+
+# Local recordings and screenshots; the server reads these from a volume.
+incident_shots/
+clips/
 __pycache__/
 *.pyc
 dist/
